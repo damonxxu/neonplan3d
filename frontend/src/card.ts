@@ -341,6 +341,7 @@ clearTimeout(this.cleanTimer);
               .heatMode=${heat}
               .theme=${this._config?.theme ?? "neon"}
               .accent=${this._config?.accent ?? null}
+              .background=${this._config?.background ?? null}
               .showEnergy=${this._config?.energy ?? true}
               .flows=${this._config?.flows ?? null}
               .holograms=${this._config?.holograms ?? null}

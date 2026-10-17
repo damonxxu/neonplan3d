@@ -1438,6 +1438,8 @@
  "accent": "强调色",
  "accent_hint": "自定义强调色：霓虹外观中的线条和发光边缘、按钮和图钉——↺ 恢复霓虹青色",
  "accent_reset": "恢复青色",
+ "stage_bg": "背景",
+ "stage_bg_hint": "自定义背景代替天空：颜色（#1c2333）、CSS 渐变或图片（/local/lake.jpg）——留空则使用外观自带的天空",
  "theme_neon": "霓虹",
  "theme_blueprint": "蓝图",
  "theme_day": "日间",

@@ -84,6 +84,7 @@ export class Floorplan3dPanel extends LitElement {
     _navWrap: { state: true },
     _optsOpen: { state: true },
     _accent: { state: true },
+    _background: { state: true },
     _weather: { state: true },
     _director: { state: true },
     _micProbe: { state: true },
@@ -138,6 +139,8 @@ export class Floorplan3dPanel extends LitElement {
   private declare _optsOpen: boolean;
   /** Accent colour of the user's choice ("#rrggbb"), null for the stock cyan; remembered on this device. */
   private declare _accent: string | null;
+  /** An own background behind the house (colour, gradient or picture path), null for the look's sky; remembered on this device. */
+  private declare _background: string | null;
   /** Weather outside the house in 3D. */
   private declare _weather: boolean;
   /** Kamera-Cockpit: the live director works on this device (its own switch, default off). */
@@ -181,6 +184,7 @@ export class Floorplan3dPanel extends LitElement {
     this._theme = theme && THEMES.includes(theme) ? theme : "neon";
     const accent = prefs.get("accent");
     this._accent = accent && /^#[0-9a-f]{6}$/i.test(accent) ? accent : null;
+    this._background = prefs.get("background") || null;
     this._furnish = false;
     this._selFurniture = null;
     this._selDevice = null;
@@ -595,6 +599,19 @@ export class Floorplan3dPanel extends LitElement {
                       </button>`
                     : nothing}
                 </label>
+                <input
+                  class="fp3d-bg-input"
+                  type="text"
+                  spellcheck="false"
+                  .value=${this._background ?? ""}
+                  placeholder=${this.t("stage_bg")}
+                  title=${this.t("stage_bg_hint")}
+                  aria-label=${this.t("stage_bg")}
+                  @change=${(e: Event) => {
+                    this._background = (e.target as HTMLInputElement).value.trim() || null;
+                    prefs.set("background", this._background ?? "");
+                  }}
+                />
               </div>
               <div class="fp3d-seg fp3d-quality" role="group" aria-label=${this.t("markers")}>
                 ${(["none", "important", "all"] as MarkerMode[]).map(
@@ -896,6 +913,7 @@ export class Floorplan3dPanel extends LitElement {
           .heatMode=${this._heat}
           .theme=${this._theme}
           .accent=${this._accent}
+          .background=${this._background}
           ?furnish=${this._furnish && !tt}
           .selectedFurniture=${this._selFurniture}
           @furniture-select=${(e: CustomEvent<{ id: string | null }>) => (this._selFurniture = e.detail.id)}
@@ -1315,6 +1333,17 @@ export class Floorplan3dPanel extends LitElement {
         cursor: pointer;
         font-size: 14px;
         padding: 0 2px;
+      }
+      .fp3d-bg-input {
+        width: 150px;
+        margin-left: 4px;
+        padding: 3px 8px;
+        border: 1px solid var(--fp3d-line);
+        border-radius: 999px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        font-size: 12px;
       }
       .fp3d-nav {
         display: flex;

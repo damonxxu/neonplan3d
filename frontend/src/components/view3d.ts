@@ -118,6 +118,7 @@ import { watchedEntities } from "../watched.ts";
 import { loadVoice, micProbeAsked, micProbeDone, voicePipeline } from "../load-voice.ts";
 import { Director, HOLD_DEFAULT, directorAny, doorbellCamera, doorbellEntities, doorbellRang, type DirectorSettings, type Shot } from "../director.ts";
 import type { HistorySpec, ReplayInfo } from "../timetravel/types.ts";
+import { stageBackground } from "../background.ts";
 
 /** Which HTML markers are shown: none, only what has no 3D object or shows a value, or all. */
 export type MarkerMode = "none" | "important" | "all";
@@ -169,6 +170,7 @@ export class Fp3dView3d extends LitElement {
     heatMode: { attribute: false },
     theme: { attribute: false },
     accent: { attribute: false },
+    background: { attribute: false },
     packs: { attribute: false },
     showEnergy: { attribute: false },
     flows: { attribute: false },
@@ -281,6 +283,8 @@ export class Fp3dView3d extends LitElement {
   declare theme: Theme;
   /** Accent colour for the neon look ("#rrggbb"), null for the stock cyan. */
   declare accent: string | null;
+  /** An own background instead of the look's sky (colour, gradient or picture path), null for the sky. */
+  declare background: string | null;
   /** Show the energy values at the top (cards can switch them off). */
   declare showEnergy: boolean;
   /** Power flow lines fixed on or off (cards); null: the viewer's own toggle decides. */
@@ -535,6 +539,7 @@ export class Fp3dView3d extends LitElement {
     this.heatMode = "none";
     this.theme = "neon";
     this.accent = null;
+    this.background = null;
     this.furnish = false;
     this.trail = false;
     this.weather = true;
@@ -4151,7 +4156,8 @@ export class Fp3dView3d extends LitElement {
     const sky = this._sky;
     const mix = (a: number[], b: number[]) => `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * sky)).join(",")})`;
     const stage = STAGE[this.theme] ?? STAGE.neon;
-    const style = `--fp3d-sky:${mix(stage.night[0], stage.day[0])};--fp3d-ground:${mix(stage.night[1], stage.day[1])}`;
+    const own = stageBackground(this.background);
+    const style = `--fp3d-sky:${mix(stage.night[0], stage.day[0])};--fp3d-ground:${mix(stage.night[1], stage.day[1])}${own ? `;background:${own}` : ""}`;
     return html`<div
       class="fp3d-stage ${this.roomLabels ? "" : "fp3d-no-room-names"} ${this._low ? "fp3d-low" : ""} ${this.panelOpen ? "fp3d-panel-open" : ""} ${this.controlsRight ? "fp3d-side-right" : ""} ${this._alerts.length ? "fp3d-has-alerts" : ""} ${this._through ? "fp3d-through-on" : ""} ${this._flash ? "fp3d-flash" : ""} ${this.replay ? "fp3d-replay" : ""}"
       style=${style}
