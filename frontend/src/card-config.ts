@@ -1,5 +1,6 @@
 // Configuration of the dashboard card, shared by the card and its visual editor (a bundle of its own).
 
+import type { Backdrop } from "./background.ts";
 import type { StartView } from "./model.ts";
 import type { Quality, WallMode } from "./viewer/viewer3d.ts";
 
@@ -47,6 +48,9 @@ export interface CardConfig {
   accent?: string;
   /** An own background instead of the look's sky: a colour, a CSS gradient or a picture ("/local/lake.jpg"). */
   background?: string;
+  /** The background set up with switches (wins over `background`): mode color | image, color, color2, gradient,
+   *  image ("/local/lake.jpg"), blur (px), dim (0–0.9), saturate (0–1.5), vignette. */
+  backdrop?: Partial<Backdrop>;
   /** Energy values at the top (default true). */
   energy?: boolean;
   /** Power flow lines always on or off; without it the card has its own switch. */

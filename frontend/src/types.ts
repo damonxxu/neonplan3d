@@ -58,4 +58,6 @@ export interface HomeAssistant {
   connection: HassConnection;
   callWS<T>(msg: Record<string, unknown>): Promise<T>;
   callService(domain: string, service: string, data?: Record<string, unknown>): Promise<unknown>;
+  /** HA's fetch with the login token (uploads such as an own background picture). */
+  fetchWithAuth?(path: string, init?: RequestInit): Promise<Response>;
 }

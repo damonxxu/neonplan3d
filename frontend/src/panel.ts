@@ -14,6 +14,7 @@ import type { HomeAssistant } from "./types.ts";
 import type { MarkerMode } from "./components/view3d.ts";
 import type { HeatMode } from "./heatmap.ts";
 import { THEMES, type Theme } from "./themes.ts";
+import { readBackdrop, type Backdrop } from "./background.ts";
 import { keepInRoom, snapToWall } from "./geometry/snap.ts";
 import { furnitureName } from "./furniture-names.ts";
 import { confirmEntities, defaultHeight, entityName, kindOf } from "./devices.ts";
@@ -84,7 +85,9 @@ export class Floorplan3dPanel extends LitElement {
     _navWrap: { state: true },
     _optsOpen: { state: true },
     _accent: { state: true },
-    _background: { state: true },
+    _bgOn: { state: true },
+    _backdrop: { state: true },
+    _bgUpload: { state: true },
     _weather: { state: true },
     _director: { state: true },
     _micProbe: { state: true },
@@ -139,8 +142,12 @@ export class Floorplan3dPanel extends LitElement {
   private declare _optsOpen: boolean;
   /** Accent colour of the user's choice ("#rrggbb"), null for the stock cyan; remembered on this device. */
   private declare _accent: string | null;
-  /** An own background behind the house (colour, gradient or picture path), null for the look's sky; remembered on this device. */
-  private declare _background: string | null;
+  /** An own background behind the house instead of the look's sky (switch after FPS); remembered on this device. */
+  private declare _bgOn: boolean;
+  /** That background: a colour or a picture with blur, dim, colour and vignette. */
+  private declare _backdrop: Backdrop;
+  /** A picture is being uploaded ("busy"), or the upload failed ("error"). */
+  private declare _bgUpload: "busy" | "error" | null;
   /** Weather outside the house in 3D. */
   private declare _weather: boolean;
   /** Kamera-Cockpit: the live director works on this device (its own switch, default off). */
@@ -184,7 +191,9 @@ export class Floorplan3dPanel extends LitElement {
     this._theme = theme && THEMES.includes(theme) ? theme : "neon";
     const accent = prefs.get("accent");
     this._accent = accent && /^#[0-9a-f]{6}$/i.test(accent) ? accent : null;
-    this._background = prefs.get("background") || null;
+    this._bgOn = prefs.get("backdrop_on") === "1";
+    this._backdrop = readBackdrop(this.storedBackdrop());
+    this._bgUpload = null;
     this._furnish = false;
     this._selFurniture = null;
     this._selDevice = null;
@@ -259,6 +268,89 @@ export class Floorplan3dPanel extends LitElement {
   private setExplode(explode: boolean): void {
     this._explode = explode;
     prefs.set("explode", explode ? "1" : "0");
+  }
+
+  /** The stored background; a picture from the earlier text field ("background") is taken over. */
+  private storedBackdrop(): unknown {
+    try {
+      const stored = prefs.get("backdrop");
+      if (stored) return JSON.parse(stored);
+    } catch {
+      // broken JSON: the defaults
+    }
+    const old = prefs.get("background")?.match(/^\/\S+$|url\(["']?([^"')]+)/);
+    if (!old) return null;
+    prefs.set("backdrop_on", "1");
+    return { mode: "image", image: old[1] ?? old[0] };
+  }
+
+  private setBackdrop(change: Partial<Backdrop>): void {
+    this._backdrop = readBackdrop({ ...this._backdrop, ...change });
+    prefs.set("backdrop", JSON.stringify(this._backdrop));
+  }
+
+  /** A picture from this computer into Home Assistant's own image store; the background shows it from there. */
+  private async uploadBackdrop(file: File): Promise<void> {
+    if (!this.hass?.fetchWithAuth) return;
+    this._bgUpload = "busy";
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const res = await this.hass.fetchWithAuth("/api/image/upload", { method: "POST", body });
+      if (!res.ok) throw new Error(String(res.status));
+      const { id } = (await res.json()) as { id: string };
+      this.setBackdrop({ mode: "image", image: `/api/image/serve/${id}/original` });
+      this._bgUpload = null;
+    } catch {
+      this._bgUpload = "error";
+    }
+  }
+
+  private renderBackdropOptions() {
+    const b = this._backdrop;
+    const toggle = (key: "gradient" | "vignette", label: I18nKey) =>
+      html`<button aria-pressed=${b[key]} @click=${() => this.setBackdrop({ [key]: !b[key] })}>${this.t(label)}</button>`;
+    const swatch = (key: "color" | "color2", label: I18nKey) =>
+      html`<label class="fp3d-accent-pick" title=${this.t(label)}>
+        <input type="color" .value=${b[key]} aria-label=${this.t(label)} @input=${(e: Event) => this.setBackdrop({ [key]: (e.target as HTMLInputElement).value })} />
+      </label>`;
+    const range = (key: "blur" | "dim" | "saturate", label: I18nKey, max: number, step: number) =>
+      html`<label class="fp3d-bg-range">
+        ${this.t(label)}
+        <input type="range" min="0" max=${max} step=${step} .value=${String(b[key])} @input=${(e: Event) => this.setBackdrop({ [key]: Number((e.target as HTMLInputElement).value) })} />
+      </label>`;
+    return html`<div class="fp3d-bg-opts">
+      ${b.mode === "color"
+        ? html`${swatch("color", "bg_color")} ${toggle("gradient", "bg_gradient")} ${b.gradient ? swatch("color2", "bg_color2") : nothing}`
+        : html`<input
+              class="fp3d-bg-input"
+              type="text"
+              spellcheck="false"
+              .value=${b.image}
+              placeholder="/local/lake.jpg"
+              title=${this.t("bg_image_hint")}
+              aria-label=${this.t("bg_image")}
+              @change=${(e: Event) => this.setBackdrop({ image: (e.target as HTMLInputElement).value })}
+            />
+            ${this.hass?.fetchWithAuth
+              ? html`<label class="fp3d-bg-upload" title=${this.t("bg_upload_hint")}>
+                  ${this.t(this._bgUpload === "busy" ? "bg_uploading" : this._bgUpload === "error" ? "bg_upload_error" : "bg_upload")}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    hidden
+                    @change=${(e: Event) => {
+                      const input = e.target as HTMLInputElement;
+                      const file = input.files?.[0];
+                      input.value = "";
+                      if (file) void this.uploadBackdrop(file);
+                    }}
+                  />
+                </label>`
+              : nothing}
+            ${range("blur", "bg_blur", 40, 1)} ${range("dim", "bg_dim", 0.9, 0.05)} ${range("saturate", "bg_saturate", 1.5, 0.05)}`}
+      ${toggle("vignette", "bg_vignette")}
+    </div>`;
   }
 
   private setQuality(quality: Quality): void {
@@ -599,19 +691,6 @@ export class Floorplan3dPanel extends LitElement {
                       </button>`
                     : nothing}
                 </label>
-                <input
-                  class="fp3d-bg-input"
-                  type="text"
-                  spellcheck="false"
-                  .value=${this._background ?? ""}
-                  placeholder=${this.t("stage_bg")}
-                  title=${this.t("stage_bg_hint")}
-                  aria-label=${this.t("stage_bg")}
-                  @change=${(e: Event) => {
-                    this._background = (e.target as HTMLInputElement).value.trim() || null;
-                    prefs.set("background", this._background ?? "");
-                  }}
-                />
               </div>
               <div class="fp3d-seg fp3d-quality" role="group" aria-label=${this.t("markers")}>
                 ${(["none", "important", "all"] as MarkerMode[]).map(
@@ -665,6 +744,24 @@ export class Floorplan3dPanel extends LitElement {
                   ${this.t("fps")}
                 </button>
               </div>
+              <div class="fp3d-seg fp3d-quality" role="group" aria-label=${this.t("stage_bg")}>
+                <button
+                  aria-pressed=${this._bgOn}
+                  title=${this.t("stage_bg_hint")}
+                  @click=${() => {
+                    this._bgOn = !this._bgOn;
+                    prefs.set("backdrop_on", this._bgOn ? "1" : "0");
+                  }}
+                >
+                  ${this.t("stage_bg")}
+                </button>
+                ${this._bgOn
+                  ? (["color", "image"] as const).map(
+                      (m) => html`<button aria-pressed=${this._backdrop.mode === m} @click=${() => this.setBackdrop({ mode: m })}>${this.t(m === "color" ? "bg_mode_color" : "bg_mode_image")}</button>`,
+                    )
+                  : nothing}
+              </div>
+              ${this._bgOn ? this.renderBackdropOptions() : nothing}
               </div>`
             : nothing}
           ${this._mode === "editor" && saveState !== "idle"
@@ -913,7 +1010,7 @@ export class Floorplan3dPanel extends LitElement {
           .heatMode=${this._heat}
           .theme=${this._theme}
           .accent=${this._accent}
-          .background=${this._background}
+          .backdrop=${this._bgOn ? this._backdrop : null}
           ?furnish=${this._furnish && !tt}
           .selectedFurniture=${this._selFurniture}
           @furniture-select=${(e: CustomEvent<{ id: string | null }>) => (this._selFurniture = e.detail.id)}
@@ -1334,8 +1431,42 @@ export class Floorplan3dPanel extends LitElement {
         font-size: 14px;
         padding: 0 2px;
       }
+      /* the background's own options: a row of their own under the view options */
+      .fp3d-bg-opts {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 12px;
+        width: 100%;
+        font-size: 12px;
+        color: var(--fp3d-muted);
+      }
+      .fp3d-bg-opts > button,
+      .fp3d-bg-upload {
+        padding: 3px 10px;
+        border: 1px solid var(--fp3d-line);
+        border-radius: 999px;
+        background: transparent;
+        color: var(--fp3d-text);
+        font: inherit;
+        cursor: pointer;
+      }
+      .fp3d-bg-opts > button[aria-pressed="true"] {
+        background: var(--fp3d-accent);
+        color: var(--fp3d-accent-text);
+        border-color: var(--fp3d-accent);
+      }
+      .fp3d-bg-range {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .fp3d-bg-range input {
+        width: 90px;
+        accent-color: var(--fp3d-accent);
+      }
       .fp3d-bg-input {
-        width: 150px;
+        width: 220px;
         margin-left: 4px;
         padding: 3px 8px;
         border: 1px solid var(--fp3d-line);

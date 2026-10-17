@@ -118,7 +118,7 @@ import { watchedEntities } from "../watched.ts";
 import { loadVoice, micProbeAsked, micProbeDone, voicePipeline } from "../load-voice.ts";
 import { Director, HOLD_DEFAULT, directorAny, doorbellCamera, doorbellEntities, doorbellRang, type DirectorSettings, type Shot } from "../director.ts";
 import type { HistorySpec, ReplayInfo } from "../timetravel/types.ts";
-import { stageBackground } from "../background.ts";
+import { backdropStyle, stageBackground, type Backdrop } from "../background.ts";
 
 /** Which HTML markers are shown: none, only what has no 3D object or shows a value, or all. */
 export type MarkerMode = "none" | "important" | "all";
@@ -171,6 +171,7 @@ export class Fp3dView3d extends LitElement {
     theme: { attribute: false },
     accent: { attribute: false },
     background: { attribute: false },
+    backdrop: { attribute: false },
     packs: { attribute: false },
     showEnergy: { attribute: false },
     flows: { attribute: false },
@@ -285,6 +286,8 @@ export class Fp3dView3d extends LitElement {
   declare accent: string | null;
   /** An own background instead of the look's sky (colour, gradient or picture path), null for the sky. */
   declare background: string | null;
+  /** The background set up with switches (colour or blurred picture); before `background`, null for none. */
+  declare backdrop: Backdrop | null;
   /** Show the energy values at the top (cards can switch them off). */
   declare showEnergy: boolean;
   /** Power flow lines fixed on or off (cards); null: the viewer's own toggle decides. */
@@ -540,6 +543,7 @@ export class Fp3dView3d extends LitElement {
     this.theme = "neon";
     this.accent = null;
     this.background = null;
+    this.backdrop = null;
     this.furnish = false;
     this.trail = false;
     this.weather = true;
@@ -4156,12 +4160,15 @@ export class Fp3dView3d extends LitElement {
     const sky = this._sky;
     const mix = (a: number[], b: number[]) => `rgb(${a.map((v, i) => Math.round(v + (b[i] - v) * sky)).join(",")})`;
     const stage = STAGE[this.theme] ?? STAGE.neon;
-    const own = stageBackground(this.background);
+    const layer = this.backdrop ? backdropStyle(this.backdrop) : null;
+    const own = layer ? null : stageBackground(this.background);
     const style = `--fp3d-sky:${mix(stage.night[0], stage.day[0])};--fp3d-ground:${mix(stage.night[1], stage.day[1])}${own ? `;background:${own}` : ""}`;
     return html`<div
       class="fp3d-stage ${this.roomLabels ? "" : "fp3d-no-room-names"} ${this._low ? "fp3d-low" : ""} ${this.panelOpen ? "fp3d-panel-open" : ""} ${this.controlsRight ? "fp3d-side-right" : ""} ${this._alerts.length ? "fp3d-has-alerts" : ""} ${this._through ? "fp3d-through-on" : ""} ${this._flash ? "fp3d-flash" : ""} ${this.replay ? "fp3d-replay" : ""}"
       style=${style}
     >
+      ${layer ? html`<div class="fp3d-backdrop" style=${layer}></div>` : nothing}
+      ${layer && this.backdrop?.vignette ? html`<div class="fp3d-backdrop fp3d-vignette"></div>` : nothing}
       ${this._error ? html`<p class="fp3d-error">${this._error}</p>` : nothing} ${this.clean ? nothing : this.renderEnergy()} ${this.renderHologram()} ${this.clean ? nothing : this.renderLegend()}
       ${this.renderAlerts()} ${this.clean || this._walk ? nothing : html`${this.renderHousehold()} ${this.renderThumbs()} ${this.renderScenes()} ${this.renderFind()} ${this.renderCentral()}`} ${this.clean ? nothing : this.renderWalk()} ${this.renderSwipe()} ${this.renderInfo()} ${this.renderBinInfo()} ${this.renderThrough()} ${this.renderCameraWall()}
       ${this.clean ? nothing : this.renderProHint()} ${this.renderMenu()} ${this.renderEye()}
@@ -4373,8 +4380,19 @@ export class Fp3dView3d extends LitElement {
         overflow: hidden;
         container-type: size;
         container-name: fp3d;
+        isolation: isolate;
         background: radial-gradient(ellipse at 50% 35%, var(--fp3d-sky, var(--fp3d-bg2)), var(--fp3d-ground, var(--fp3d-bg)) 72%);
         transition: background 2s ease;
+      }
+      /* the own background behind the house: the stage isolates, so -1 stays inside it, above the stage's sky */
+      .fp3d-backdrop {
+        position: absolute;
+        inset: 0;
+        z-index: -1;
+        pointer-events: none;
+      }
+      .fp3d-vignette {
+        background: radial-gradient(ellipse at 50% 50%, transparent 45%, rgba(4, 8, 16, 0.6));
       }
       .fp3d-canvas {
         position: absolute;
