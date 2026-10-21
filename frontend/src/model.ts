@@ -119,6 +119,10 @@ export interface Opening {
   mark?: "closed" | null;
   /** Ask before moving the blind or garage door; it then does not follow a swipe either. */
   confirm?: boolean;
+  /** Windows: a curtain inside that draws to both sides or to one side (seen from the room) instead of a blind outside. */
+  curtain?: "both" | "left" | "right" | null;
+  /** false: tapping or swiping the window does nothing, the cover is worked from its own pin (fewer taps by mistake). */
+  cover_tap?: boolean;
   cover: EntityRef;
   contact: EntityRef;
   tilt: EntityRef;

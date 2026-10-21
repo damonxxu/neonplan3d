@@ -3128,7 +3128,10 @@ export class Fp3dView3d extends LitElement {
   /** Tapping a window opens its blind (or contact); a door or garage door its cover or contact. */
   private openingTargets(): Map<string, string> {
     const out = new Map<string, string>();
+    // windows whose cover is worked only from its own pin
+    const off = new Set(this.building?.floors.flatMap((f) => f.openings.filter((o) => o.cover_tap === false).map((o) => o.id)));
     for (const [id, e] of this.openingLinks ?? []) {
+      if (off.has(id)) continue;
       const target = e.cover ?? e.contact ?? e.tilt;
       if (target) out.set(id, target);
     }

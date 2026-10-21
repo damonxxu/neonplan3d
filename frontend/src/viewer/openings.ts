@@ -309,8 +309,10 @@ export function buildOpeningParts(infos: readonly OpeningInfo[], states: Readonl
         }
       }
     }
-    // blind on the outside: box above the opening, slats down to the closed fraction
-    if (st.cover !== null) {
+    if (st.cover !== null && info.opening.type === "window" && info.opening.curtain) {
+      curtain(frames, tf, info, Math.min(1, Math.max(0, st.cover)), cut, bucket);
+    } else if (st.cover !== null) {
+      // blind on the outside: box above the opening, slats down to the closed fraction
       const out = -info.faceOut;
       const boxTop = T + 0.2;
       splitBox(frames, tf, -0.05, W + 0.05, out - 0.15, out, T, boxTop, new Color(BLIND_BOX), frameTop, cut, bucket);
@@ -325,4 +327,52 @@ export function buildOpeningParts(infos: readonly OpeningInfo[], states: Readonl
     blindTris.push({ id: info.opening.id, start: bStart, end: blinds.count });
   }
   return { frames: frames.geometry(), glass: glass.geometry(), blinds: blinds.geometry(), frameTris, glassTris, blindTris };
+}
+
+const FABRIC = 0x9aa6c4;
+const RAIL = 0x2a3550;
+
+/**
+ * A curtain inside the room instead of a blind outside: a rail above the window and pleated fabric that
+ * draws to the sides (both, or to one side as seen from the room). `closed` 0 leaves only the gathered
+ * stacks at the edges, 1 covers the window.
+ */
+function curtain(buf: GeoBuffer, tf: Tf, info: OpeningInfo, closed: number, cut: number, bucket: number): void {
+  const W = info.width;
+  const over = 0.12;
+  const top = info.top + 0.12;
+  // floor-length, except high windows (bath, kitchen) where it ends just below the sill
+  const bottom = info.sill > 0.85 ? info.sill - 0.08 : 0.02;
+  const n = info.faceRoom + 0.05;
+  splitBox(buf, tf, -over, W + over, n - 0.015, n + 0.035, top, top + 0.04, new Color(RAIL), shade(RAIL, 1.3), cut, bucket);
+  // which end of the opening is on the left for someone in the room looking out
+  const leftAtEnd = info.axis[0] * -info.toRoom[1] + info.axis[1] * info.toRoom[0] > 0;
+  const side = info.opening.curtain;
+  const span = W + 2 * over;
+  const stack = Math.min(0.2, span * 0.12);
+  // each panel: [anchor edge x, direction it closes towards, its full width]
+  const panels: [number, number, number][] =
+    side === "both"
+      ? [
+          [-over, 1, span / 2],
+          [W + over, -1, span / 2],
+        ]
+      : (side === "left") === leftAtEnd
+        ? [[W + over, -1, span]]
+        : [[-over, 1, span]];
+  const light = new Color(FABRIC);
+  const dark = shade(FABRIC, 0.78);
+  for (const [edge, dir, full] of panels) {
+    const w = stack + (full - stack) * closed;
+    const count = Math.max(3, Math.round(w / 0.09));
+    const pw = w / count;
+    for (let i = 0; i < count; i++) {
+      const a = edge + dir * i * pw;
+      const b = edge + dir * (i + 1) * pw;
+      // pleats: every other fold stands a little further into the room
+      const d = i % 2 ? 0.025 : 0;
+      const col = i % 2 ? dark : light;
+      splitBox(buf, tf, Math.min(a, b), Math.max(a, b), n + d, n + d + 0.012, bottom, top, col, col, cut, bucket);
+    }
+  }
 }

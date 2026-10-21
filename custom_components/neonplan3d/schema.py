@@ -157,6 +157,10 @@ OPENING_SCHEMA = vol.Schema(
         # highlight in 3D while open (None) or while closed ("closed": a WC or a child's room door)
         vol.Optional("mark", default=None): vol.Any(None, vol.In(["closed"])),
         # ask before moving the blind or garage door (no moving by a swipe then)
+        # windows: a curtain inside drawn to both sides or to one side instead of a blind outside
+        vol.Optional("curtain", default=None): vol.Any(None, vol.In(["both", "left", "right"])),
+        # False: tapping the window does not work its cover (only its own pin does)
+        vol.Optional("cover_tap", default=True): bool,
         vol.Optional("confirm", default=False): bool,
         vol.Optional("cover", default=None): _ENTITY_REF,
         vol.Optional("contact", default=None): _ENTITY_REF,

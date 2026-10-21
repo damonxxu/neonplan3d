@@ -10193,6 +10193,19 @@ export class Fp3dEditor extends LitElement {
               <label class="fp3d-check fp3d-wide" title=${this.t("cover_confirm_hint")}
                 ><input type="checkbox" ?disabled=${!admin} .checked=${!!o.confirm} @change=${(ev: Event) => this.updateOpening({ confirm: (ev.target as HTMLInputElement).checked })} />
                 ${this.t("device_confirm")}</label
+              >
+              ${window
+                ? html`<label class="fp3d-field fp3d-wide"
+                    >${this.t("cover_look")}
+                    <select ?disabled=${!admin} @change=${(e: Event) => this.updateOpening({ curtain: ((e.target as HTMLSelectElement).value || null) as Opening["curtain"] })}>
+                      <option value="" ?selected=${!o.curtain}>${this.t("cover_look_blind")}</option>
+                      ${(["both", "left", "right"] as const).map((k) => html`<option value=${k} ?selected=${o.curtain === k}>${this.t(`cover_look_curtain_${k}`)}</option>`)}
+                    </select></label
+                  >`
+                : nothing}
+              <label class="fp3d-check fp3d-wide" title=${this.t("cover_tap_off_hint")}
+                ><input type="checkbox" ?disabled=${!admin} .checked=${o.cover_tap === false} @change=${(ev: Event) => this.updateOpening({ cover_tap: (ev.target as HTMLInputElement).checked ? false : undefined })} />
+                ${this.t("cover_tap_off")}</label
               >`
           : nothing}
         ${window
