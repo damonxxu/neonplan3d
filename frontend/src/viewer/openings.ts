@@ -340,11 +340,13 @@ const RAIL = 0x2a3550;
 function curtain(buf: GeoBuffer, tf: Tf, info: OpeningInfo, closed: number, cut: number, bucket: number): void {
   const W = info.width;
   const over = 0.12;
-  const top = info.top + 0.12;
+  // the rail hangs just above the window and always clearly below the top of the wall
+  const top = Math.max(info.top, Math.min(info.top + 0.1, info.ceiling - 0.15));
   // floor-length, except high windows (bath, kitchen) where it ends just below the sill
   const bottom = info.sill > 0.85 ? info.sill - 0.08 : 0.02;
-  const n = info.faceRoom + 0.05;
-  splitBox(buf, tf, -over, W + over, n - 0.015, n + 0.035, top, top + 0.04, new Color(RAIL), shade(RAIL, 1.3), cut, bucket);
+  // close to the wall's room face
+  const n = info.faceRoom + 0.008;
+  splitBox(buf, tf, -over, W + over, n - 0.004, n + 0.04, top, top + 0.035, new Color(RAIL), shade(RAIL, 1.3), cut, bucket);
   // which end of the opening is on the left for someone in the room looking out
   const leftAtEnd = info.axis[0] * -info.toRoom[1] + info.axis[1] * info.toRoom[0] > 0;
   const side = info.opening.curtain;
@@ -370,7 +372,7 @@ function curtain(buf: GeoBuffer, tf: Tf, info: OpeningInfo, closed: number, cut:
       const a = edge + dir * i * pw;
       const b = edge + dir * (i + 1) * pw;
       // pleats: every other fold stands a little further into the room
-      const d = i % 2 ? 0.025 : 0;
+      const d = i % 2 ? 0.02 : 0;
       const col = i % 2 ? dark : light;
       splitBox(buf, tf, Math.min(a, b), Math.max(a, b), n + d, n + d + 0.012, bottom, top, col, col, cut, bucket);
     }

@@ -60,6 +60,8 @@ export interface OpeningInfo {
   faceOut: number;
   sill: number;
   top: number;
+  /** Top of the wall above the opening (a curtain rail stays below it). */
+  ceiling: number;
   /** True when the sash hinge is at the start of the opening (as seen along the axis). */
   hingeAtStart: boolean;
   exterior: boolean;
@@ -228,13 +230,19 @@ export function buildFloorGeometry(
     const len = Math.hypot(wall.b[0] - wall.a[0], wall.b[1] - wall.a[1]);
     const width = Math.min(o.width, len);
     const s0 = Math.max(0, Math.min(len - width, s - width / 2));
-    // in a free wall the "room" side is the left of the wall as drawn; an outer wall has its room on the left, whatever
-    // room the opening was given (a window filed under the neighbouring room had its blind inside, #542)
+    // in a free wall the "room" side is the left of the wall as drawn; an outer wall has its room on the side that has
+    // one, whatever room the opening was given (a window filed under the neighbouring room had its blind inside, #542) –
+    // usually the left, but a wall joined from collinear edges can run the other way round
     const hp = host.room.points;
-    const roomLeft = wall.free ? ax[0] * (hp[1][0] - hp[0][0]) + ax[1] * (hp[1][1] - hp[0][1]) > 0 : wall.exterior || wall.roomLeft === o.room_id;
+    const roomLeft = wall.free
+      ? ax[0] * (hp[1][0] - hp[0][0]) + ax[1] * (hp[1][1] - hp[0][1]) > 0
+      : wall.exterior
+        ? wall.roomLeft !== null || wall.roomRight === null
+        : wall.roomLeft === o.room_id;
     const nLeft: Vec2 = [-ax[1], ax[0]];
     const toRoom: Vec2 = roomLeft ? nLeft : [-nLeft[0], -nLeft[1]];
-    const top = Math.min(lowestTop(wall.a, ax, s0, s0 + width, wallHeight(wall, floor.height)) - 0.02, o.sill + o.height);
+    const ceiling = lowestTop(wall.a, ax, s0, s0 + width, wallHeight(wall, floor.height));
+    const top = Math.min(ceiling - 0.02, o.sill + o.height);
     const sill = Math.max(0, Math.min(o.sill, top - 0.1));
     // looking at the wall from the room, "right" is (toRoom.z, -toRoom.x)
     const right: Vec2 = [toRoom[1], -toRoom[0]];
@@ -250,6 +258,7 @@ export function buildFloorGeometry(
       faceOut: roomLeft ? wall.right : wall.left,
       sill,
       top,
+      ceiling,
       hingeAtStart: (o.hinge === "left") === startIsLeft,
       exterior: wall.exterior,
     };
