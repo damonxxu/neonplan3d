@@ -325,6 +325,10 @@ FURNITURE_SCHEMA = vol.Schema(
 
 PLACEMENT_SCHEMA = vol.Schema(
     {
+        # several values in its pin, as for furniture
+        vol.Optional("pin_items", default=list): vol.All([PIN_ITEM_SCHEMA], vol.Length(max=6)),
+        vol.Optional("pin_busy", default=None): _ENTITY_REF,
+        vol.Optional("pin_phase", default=None): _ENTITY_REF,
         vol.Required("entity_id"): vol.All(str, vol.Length(max=255)),
         vol.Required("x"): _COORD,
         vol.Required("z"): _COORD,

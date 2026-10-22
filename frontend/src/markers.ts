@@ -8,6 +8,7 @@ import type { Building } from "./model.ts";
 import { pointInPolygon } from "./model.ts";
 import type { HassEntity, HomeAssistant } from "./types.ts";
 import type { DeviceMarker } from "./viewer/viewer3d.ts";
+import { pinBusy, pinText } from "./pins.ts";
 
 const t = (hass: HomeAssistant | undefined, key: I18nKey) => translate(hass, key);
 
@@ -72,6 +73,7 @@ export function buildMarkers(hass: HomeAssistant, building: Building): DeviceMar
       if (!kind || !st) continue;
       const room = floor.rooms.find((r) => r.points.length >= 3 && pointInPolygon([pl.x, pl.z], r.points)) ?? null;
       const areaName = room?.area_id ? hass.areas?.[room.area_id]?.name : undefined;
+      const busy = pinBusy(hass, pl);
       out.push({
         id: pl.entity_id,
         floorId: floor.id,
@@ -91,8 +93,8 @@ export function buildMarkers(hass: HomeAssistant, building: Building): DeviceMar
         name: pl.name || entityName(hass, pl.entity_id, areaName),
         ownName: pl.name || undefined,
         showName: !!pl.show_name,
-        text: stateText(hass, st),
-        active: isActive(st),
+        text: pinText(hass, pl) ?? stateText(hass, st),
+        active: busy ?? isActive(st),
         unavailable: isUnavailable(st),
         glow: kind === "light" ? scaleGlow(lightGlow(st), pl.glow_scale) : null,
         show: pl.marker ?? undefined,

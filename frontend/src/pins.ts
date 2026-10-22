@@ -2,13 +2,20 @@
 
 import { isActive, isUnavailable, kindOf } from "./devices.ts";
 import { stateText } from "./markers.ts";
-import type { Furniture, PinItem } from "./model.ts";
+import type { EntityRef, PinItem } from "./model.ts";
 import type { HassEntity, HomeAssistant } from "./types.ts";
 
 /** Phases in which an appliance still works out its program (no countdown yet): "Auto". */
 const AUTO = /自动|智能|判断|称重|auto|smart|sensing|detect|weigh/i;
 /** Phases after the program: "Done". */
 const DONE = /结束|完成|防皱|done|finish|end|complete|anti.?crease|anti.?wrinkle/i;
+
+/** Furniture or a placed device with several values in its pin. */
+export interface PinSource {
+  pin_items?: PinItem[];
+  pin_busy?: EntityRef;
+  pin_phase?: EntityRef;
+}
 
 /** At most this many values stand in one pin. */
 export const PIN_MAX = 3;
@@ -25,6 +32,8 @@ export function hm(minutes: number): string {
 /** A number without needless decimals and its unit, written short: 42.5 °C → "42.5°", 1.50 → "1.5", 0.28 kWh → "0.28kWh". */
 export function compactValue(hass: HomeAssistant | undefined, st: HassEntity | undefined): string {
   if (!st || isUnavailable(st)) return "–";
+  // a problem sensor (food low, a water tank): "OK" or "!"; other binary sensors and switches "On" / "Off"
+  if (kindOf(st.entity_id) === "binary") return st.attributes.device_class === "problem" ? (st.state === "on" ? "!" : "OK") : st.state === "on" ? "On" : "Off";
   const v = Number(st.state);
   if (kindOf(st.entity_id) !== "sensor" || st.state === "" || !Number.isFinite(v)) return stateText(hass, st);
   const unit = String(st.attributes.unit_of_measurement ?? "").trim();
@@ -48,7 +57,7 @@ function itemText(hass: HomeAssistant, item: PinItem, busy: boolean): string {
 }
 
 /** Whether the item's appliance is at work (null: no entity tells it). */
-export function pinBusy(hass: HomeAssistant, f: Pick<Furniture, "pin_busy">): boolean | null {
+export function pinBusy(hass: HomeAssistant, f: PinSource): boolean | null {
   const ref = f.pin_busy;
   if (!ref || ref === "none") return null;
   const st = hass.states[ref];
@@ -61,7 +70,7 @@ export function pinBusy(hass: HomeAssistant, f: Pick<Furniture, "pin_busy">): bo
  * The pin text of an item with pin items (null: it has none): "Idle" while its appliance rests, "Auto" while its
  * phase says it still works out the program (a dryer sensing the load), "Done" after the program, else the values.
  */
-export function pinText(hass: HomeAssistant, f: Pick<Furniture, "pin_items" | "pin_busy" | "pin_phase">): string | null {
+export function pinText(hass: HomeAssistant, f: PinSource): string | null {
   const items = (f.pin_items ?? []).filter((i) => i.entity && i.entity !== "none").slice(0, PIN_MAX);
   if (!items.length) return null;
   const busy = pinBusy(hass, f);

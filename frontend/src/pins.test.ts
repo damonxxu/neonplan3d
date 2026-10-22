@@ -50,3 +50,11 @@ test("while it works out its program the pin says Auto, afterwards Done, then th
   // working without a time: it chooses itself
   assert.equal(pinText(at("洗涤", "0"), { ...f, pin_phase: null }), "Auto");
 });
+
+test("binary values are short: a problem is OK or !, the rest On or Off", () => {
+  const hass = hassOf();
+  const bin = (state: string, device_class?: string) => ({ entity_id: "binary_sensor.x", state, attributes: device_class ? { device_class } : {}, last_changed: "", last_updated: "" });
+  assert.equal(compactValue(hass, bin("off", "problem")), "OK");
+  assert.equal(compactValue(hass, bin("on", "problem")), "!");
+  assert.equal(compactValue(hass, bin("on", "running")), "On");
+});

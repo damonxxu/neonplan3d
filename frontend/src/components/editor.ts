@@ -10836,7 +10836,7 @@ export class Fp3dEditor extends LitElement {
    * Several values in the item's pin (up to three, each with a short label), how a time left is read, the entity that
    * tells whether the appliance works (resting: only "Idle"), and a boiler's mode that colours its glow.
    */
-  private renderPinItems(f: Furniture) {
+  private renderPinItems(f: Furniture | Placement, update: (patch: Partial<Furniture> & Partial<Placement>) => void = (p) => update(p)) {
     const admin = this.isAdmin;
     const items = f.pin_items ?? [];
     const sensors = this.entityOptions((id) => /^(sensor|binary_sensor|switch|input_boolean|input_number|climate|number|select)\./.test(id));
@@ -10845,7 +10845,7 @@ export class Fp3dEditor extends LitElement {
       const next = items.map((it) => ({ ...it }));
       if (patch === null) next.splice(i, 1);
       else next[i] = { ...next[i], ...patch };
-      this.updateFurniture({ pin_items: next });
+      update({ pin_items: next });
     };
     // "hm": hours with a minutes sensor (an empty one while it is not picked yet)
     const format = (it: PinItem) => (it.minutes != null ? "hm" : it.duration ? "min" : "value");
@@ -10875,14 +10875,14 @@ export class Fp3dEditor extends LitElement {
               : nothing}`,
         )}
         ${items.length < PIN_MAX && admin
-          ? html`<button class="fp3d-wide" @click=${() => this.updateFurniture({ pin_items: [...items, { entity: "", label: null }] })}>${this.t("pin_add")}</button>`
+          ? html`<button class="fp3d-wide" @click=${() => update({ pin_items: [...items, { entity: "", label: null }] })}>${this.t("pin_add")}</button>`
           : nothing}
         ${items.length
-          ? html`${this.entitySelect(this.t("pin_busy"), f.pin_busy ?? null, undefined, states, (v) => this.updateFurniture({ pin_busy: v === "none" ? null : v }))}
-            ${this.entitySelect(this.t("pin_phase"), f.pin_phase ?? null, undefined, states, (v) => this.updateFurniture({ pin_phase: v === "none" ? null : v }))}`
+          ? html`${this.entitySelect(this.t("pin_busy"), f.pin_busy ?? null, undefined, states, (v) => update({ pin_busy: v === "none" ? null : v }))}
+            ${this.entitySelect(this.t("pin_phase"), f.pin_phase ?? null, undefined, states, (v) => update({ pin_phase: v === "none" ? null : v }))}`
           : nothing}
-        ${f.type === "boiler"
-          ? this.entitySelect(this.t("boiler_mode"), f.mode_entity ?? null, undefined, sensors, (v) => this.updateFurniture({ mode_entity: v === "none" ? null : v }))
+        ${"type" in f && f.type === "boiler"
+          ? this.entitySelect(this.t("boiler_mode"), ("mode_entity" in f ? f.mode_entity : null) ?? null, undefined, sensors, (v) => update({ mode_entity: v === "none" ? null : v }))
           : nothing}
         <p class="fp3d-sub fp3d-wide">${this.t("pin_items_hint")}</p>
       </div>
@@ -11761,6 +11761,7 @@ export class Fp3dEditor extends LitElement {
           : nothing}
         ${this.iconInput(pl.icon, (v) => this.updateDevice({ icon: v }))}
       </div>
+      ${this.renderPinItems(pl, (p) => this.updateDevice(p))}
       ${admin
         ? html`<div class="fp3d-actions">
             <button class="fp3d-btn" @click=${() => this.centreDevice()}>${this.t("device_centre")}</button>

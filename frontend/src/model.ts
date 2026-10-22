@@ -324,6 +324,10 @@ export interface Placement {
   cone?: boolean | null;
   /** Cameras: detection pins (person, car, animal) over the camera (null = yes); false leaves only the wedge turning red (#267). */
   detect_pins?: boolean | null;
+  /** Several values in its pin (the first three), an entity telling whether it works, its phase – as for furniture. */
+  pin_items?: PinItem[];
+  pin_busy?: EntityRef;
+  pin_phase?: EntityRef;
 }
 
 export interface Background {

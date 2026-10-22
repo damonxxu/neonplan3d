@@ -4522,7 +4522,8 @@ export class Fp3dView3d extends LitElement {
         padding-right: 6px;
         color: var(--fp3d-text);
         font-variant-numeric: tabular-nums;
-        max-width: 160px;
+        /* room for three short values ("TDS 10ppm · F1 53% · F2 92%") */
+        max-width: 240px;
         overflow: hidden;
         text-overflow: ellipsis;
       }
