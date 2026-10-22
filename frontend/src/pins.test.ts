@@ -58,3 +58,12 @@ test("binary values are short: a problem is OK or !, the rest On or Off", () => 
   assert.equal(compactValue(hass, bin("on", "problem")), "!");
   assert.equal(compactValue(hass, bin("on", "running")), "On");
 });
+
+test("own words for the states, and a problem still shows while it rests", () => {
+  const prob = (state: string) => ({ entity_id: "binary_sensor.food", state, attributes: { device_class: "problem" }, last_changed: "", last_updated: "" });
+  const f = { pin_items: [{ entity: "binary_sensor.food", label: "Food" }, { entity: "sensor.d", label: "D" }], pin_busy: "binary_sensor.feeding", pin_texts: { idle: "待机" } };
+  const at = (food: string) => hassOf(st("binary_sensor.feeding", "off"), prob(food) as ReturnType<typeof st>, st("sensor.d", "30", "d"));
+  assert.equal(pinText(at("off"), f), "待机");
+  assert.equal(pinText(at("on"), f), "待机 · Food !");
+  assert.equal(pinText(at("off"), { ...f, pin_texts: { idle: "  " } }), "Idle");
+});

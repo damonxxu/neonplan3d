@@ -23,6 +23,13 @@ export interface PinItem {
   duration?: boolean;
 }
 
+/** Own words for a pin's states (null: "Idle", "Auto", "Done"). */
+export interface PinTexts {
+  idle?: string | null;
+  auto?: string | null;
+  done?: string | null;
+}
+
 /** A wall height on a room edge, or one per part of a split edge. */
 export type WallHeight = number | null | (number | null)[];
 
@@ -256,6 +263,10 @@ export interface Furniture {
   pin_busy?: EntityRef;
   /** With pin items: the appliance's phase – while it works out its program the pin says "Auto", after it "Done". */
   pin_phase?: EntityRef;
+  /** Own words for the pin's states ("待机" instead of "Idle"). */
+  pin_texts?: PinTexts | null;
+  /** The pin moved away from the item (m, along the plan's x and z and up), e.g. apart from a stacked dryer's. */
+  pin_offset?: { x: number; y: number; z: number } | null;
   /** Boiler: what it heats right now (hot water or the heating) – the colour of its glow. */
   mode_entity?: EntityRef;
   /** Lamps: a second entity whose colour and brightness the lamp shows while the linked switch is on (a relay switches the light, the bulb itself knows its colour). */
@@ -328,6 +339,7 @@ export interface Placement {
   pin_items?: PinItem[];
   pin_busy?: EntityRef;
   pin_phase?: EntityRef;
+  pin_texts?: PinTexts | null;
 }
 
 export interface Background {

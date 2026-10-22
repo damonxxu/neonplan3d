@@ -10879,7 +10879,35 @@ export class Fp3dEditor extends LitElement {
           : nothing}
         ${items.length
           ? html`${this.entitySelect(this.t("pin_busy"), f.pin_busy ?? null, undefined, states, (v) => update({ pin_busy: v === "none" ? null : v }))}
-            ${this.entitySelect(this.t("pin_phase"), f.pin_phase ?? null, undefined, states, (v) => update({ pin_phase: v === "none" ? null : v }))}`
+            ${this.entitySelect(this.t("pin_phase"), f.pin_phase ?? null, undefined, states, (v) => update({ pin_phase: v === "none" ? null : v }))}
+            ${(["idle", "auto", "done"] as const).map(
+              (k) => html`<label class="fp3d-field"
+                >${this.t(`pin_text_${k}`)}
+                <input
+                  ?disabled=${!admin}
+                  maxlength="8"
+                  placeholder=${k === "idle" ? "Idle" : k === "auto" ? "Auto" : "Done"}
+                  .value=${f.pin_texts?.[k] ?? ""}
+                  @change=${(e: Event) => update({ pin_texts: { ...f.pin_texts, [k]: (e.target as HTMLInputElement).value.trim() || null } })}
+              /></label>`,
+            )}`
+          : nothing}
+        ${"type" in f
+          ? (["x", "z", "y"] as const).map(
+              (k) => html`<label class="fp3d-field"
+                >${this.t(`pin_offset_${k}`)}
+                <input
+                  type="number"
+                  step="0.05"
+                  ?disabled=${!admin}
+                  .value=${String(f.pin_offset?.[k] ?? 0)}
+                  @change=${(e: Event) => {
+                    const v = Number((e.target as HTMLInputElement).value) || 0;
+                    const next = { x: 0, y: 0, z: 0, ...f.pin_offset, [k]: v };
+                    update({ pin_offset: next.x || next.y || next.z ? next : null });
+                  }}
+              /></label>`,
+            )
           : nothing}
         ${"type" in f && f.type === "boiler"
           ? this.entitySelect(this.t("boiler_mode"), ("mode_entity" in f ? f.mode_entity : null) ?? null, undefined, sensors, (v) => update({ mode_entity: v === "none" ? null : v }))

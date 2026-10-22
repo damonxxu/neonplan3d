@@ -2,7 +2,7 @@
 
 import { isActive, isUnavailable, kindOf } from "./devices.ts";
 import { stateText } from "./markers.ts";
-import type { EntityRef, PinItem } from "./model.ts";
+import type { EntityRef, PinItem, PinTexts } from "./model.ts";
 import type { HassEntity, HomeAssistant } from "./types.ts";
 
 /** Phases in which an appliance still works out its program (no countdown yet): "Auto". */
@@ -15,6 +15,7 @@ export interface PinSource {
   pin_items?: PinItem[];
   pin_busy?: EntityRef;
   pin_phase?: EntityRef;
+  pin_texts?: PinTexts | null;
 }
 
 /** At most this many values stand in one pin. */
@@ -73,12 +74,17 @@ export function pinBusy(hass: HomeAssistant, f: PinSource): boolean | null {
 export function pinText(hass: HomeAssistant, f: PinSource): string | null {
   const items = (f.pin_items ?? []).filter((i) => i.entity && i.entity !== "none").slice(0, PIN_MAX);
   if (!items.length) return null;
+  const word = (k: keyof PinTexts, fallback: string) => f.pin_texts?.[k]?.trim() || fallback;
   const busy = pinBusy(hass, f);
-  if (busy === false) return "Idle";
+  if (busy === false) {
+    // resting – but a problem (food running low, a full tank) still shows
+    const problems = items.filter((i) => hass.states[i.entity]?.attributes.device_class === "problem" && hass.states[i.entity]?.state === "on");
+    return [word("idle", "Idle"), ...problems.map((i) => itemText(hass, i, false))].join(" · ");
+  }
   const phase = f.pin_phase && f.pin_phase !== "none" ? hass.states[f.pin_phase] : undefined;
   if (phase && !isUnavailable(phase)) {
-    if (DONE.test(phase.state)) return "Done";
-    if (AUTO.test(phase.state)) return "Auto";
+    if (DONE.test(phase.state)) return word("done", "Done");
+    if (AUTO.test(phase.state)) return word("auto", "Auto");
   }
   return items.map((i) => itemText(hass, i, busy === true)).join(" · ");
 }

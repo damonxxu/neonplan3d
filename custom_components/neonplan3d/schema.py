@@ -204,6 +204,13 @@ _VEHICLE_TYPE_SCHEMA = vol.Schema(
 WASTE_KINDS = ["rest", "bio", "paper", "plastic", "glass", "garden", "recycling", "other"]
 
 # one value in an item's pin (pins.ts): a sensor with a short label; hours with a minutes sensor, or minutes as H:MM
+# own words for a pin's states, and a pin moved away from its item
+PIN_TEXTS_SCHEMA = vol.Any(
+    None,
+    vol.Schema({vol.Optional(k, default=None): vol.Any(None, vol.All(str, vol.Length(max=16))) for k in ("idle", "auto", "done")}),
+)
+PIN_OFFSET_SCHEMA = vol.Any(None, vol.Schema({vol.Required(k): vol.All(vol.Coerce(float), vol.Range(min=-5, max=5)) for k in ("x", "y", "z")}))
+
 PIN_ITEM_SCHEMA = vol.Schema(
     {
         vol.Required("entity"): vol.All(str, vol.Length(max=255)),
@@ -273,7 +280,9 @@ FURNITURE_SCHEMA = vol.Schema(
         vol.Optional("pin_items", default=list): vol.All([PIN_ITEM_SCHEMA], vol.Length(max=6)),
         vol.Optional("pin_busy", default=None): _ENTITY_REF,
         vol.Optional("pin_phase", default=None): _ENTITY_REF,
+        vol.Optional("pin_texts", default=None): PIN_TEXTS_SCHEMA,
         vol.Optional("mode_entity", default=None): _ENTITY_REF,
+        vol.Optional("pin_offset", default=None): PIN_OFFSET_SCHEMA,
         # lamps: a second entity with the colour and brightness (a relay switches, the bulb knows its colour)
         vol.Optional("color_entity", default=None): vol.Any(None, vol.All(str, vol.Length(max=255))),
         # mirrored left-right
@@ -329,6 +338,7 @@ PLACEMENT_SCHEMA = vol.Schema(
         vol.Optional("pin_items", default=list): vol.All([PIN_ITEM_SCHEMA], vol.Length(max=6)),
         vol.Optional("pin_busy", default=None): _ENTITY_REF,
         vol.Optional("pin_phase", default=None): _ENTITY_REF,
+        vol.Optional("pin_texts", default=None): PIN_TEXTS_SCHEMA,
         vol.Required("entity_id"): vol.All(str, vol.Length(max=255)),
         vol.Required("x"): _COORD,
         vol.Required("z"): _COORD,
