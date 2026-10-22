@@ -252,7 +252,7 @@ export interface ScreenState {
   plain?: boolean;
   /** Furniture with a state: glowing faces on top of the item instead of a screen – the whole top, or a half of it. */
   // (see also SoundSource below)
-  faces?: { part: "all" | "left" | "right" | "top" | "bottom" | "band" | "cabin" | "lights" | "burners" | "lid" | "beacon"; color: [number, number, number]; level: number }[];
+  faces?: { part: "all" | "left" | "right" | "top" | "bottom" | "band" | "cabin" | "lights" | "burners" | "lid" | "beacon" | "shell"; color: [number, number, number]; level: number }[];
 }
 
 /** Position of the sun (from sun.sun): degrees above the horizon and clockwise from north. */
@@ -2966,6 +2966,27 @@ export class FloorplanViewer {
               buf.tri(p00, p10, p11, col);
               buf.tri(p00, p11, p01, col);
             }
+            continue;
+          }
+          if (face.part === "shell") {
+            // the whole body glows (a burning boiler): its faces, a hair outside the body
+            const col = new Color(...face.color.map((v) => Math.min(1, v * (0.25 + 0.45 * face.level))) as [number, number, number]);
+            const e = 0.006;
+            const hw = Math.abs(w) / 2 + e;
+            const hd = d / 2 + e;
+            const y0 = base - e;
+            const y1 = base + h + e;
+            const S = (x: number, y: number, z: number) => P(x * Math.sign(w), y, z);
+            const quad = (a: number[], b: number[], c: number[], q: number[]) => {
+              buf.tri(a, b, c, col);
+              buf.tri(a, c, q, col);
+            };
+            // front, the two sides, top and bottom (the back lies against the wall)
+            quad(S(-hw, y0, hd), S(hw, y0, hd), S(hw, y1, hd), S(-hw, y1, hd));
+            quad(S(-hw, y0, -hd), S(-hw, y0, hd), S(-hw, y1, hd), S(-hw, y1, -hd));
+            quad(S(hw, y0, hd), S(hw, y0, -hd), S(hw, y1, -hd), S(hw, y1, hd));
+            quad(S(-hw, y1, hd), S(hw, y1, hd), S(hw, y1, -hd), S(-hw, y1, -hd));
+            quad(S(-hw, y0, -hd), S(hw, y0, -hd), S(hw, y0, hd), S(-hw, y0, hd));
             continue;
           }
           if (face.part === "beacon") {

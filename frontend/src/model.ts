@@ -13,6 +13,16 @@ export interface RoomClimate {
   co2?: string | null;
 }
 
+/** One value in an item's pin: a sensor with a short label in front. */
+export interface PinItem {
+  entity: string;
+  label?: string | null;
+  /** The entity reports hours, this one the minutes: shown together as "H:MM". */
+  minutes?: string | null;
+  /** The entity reports minutes: shown as "H:MM". */
+  duration?: boolean;
+}
+
 /** A wall height on a room edge, or one per part of a split edge. */
 export type WallHeight = number | null | (number | null)[];
 
@@ -240,6 +250,12 @@ export interface Furniture {
   /** A second state entity for the other half: left/right (a double bed) or bottom/top (a bunk bed). */
   state_entity2?: EntityRef;
   state_split?: "left_right" | "top_bottom" | null;
+  /** Several values in the item's pin, the first three shown: "HW 42° · P 1.5" (instead of a pin each). */
+  pin_items?: PinItem[];
+  /** With pin items: while this entity is idle (off, standby) the pin only says "Idle", else it shows the items. */
+  pin_busy?: EntityRef;
+  /** Boiler: what it heats right now (hot water or the heating) – the colour of its glow. */
+  mode_entity?: EntityRef;
   /** Lamps: a second entity whose colour and brightness the lamp shows while the linked switch is on (a relay switches the light, the bulb itself knows its colour). */
   color_entity?: EntityRef;
   /** Mirrored (left-right) – an L-sofa the other way round, a cabinet with its door on the other side. */
@@ -1139,6 +1155,7 @@ export const FURNITURE_TYPES = [
   "lamp_garden",
   "radiator",
   "ac_unit",
+  "boiler",
   "sofa",
   "sofa_l",
   "sofa_u",
@@ -1207,7 +1224,7 @@ export const FURNITURE_GROUPS: Record<string, FurnitureType[]> = {
   lights: ["lamp_ceiling", "lamp_downlight", "lamp_spot", "lamp_panel", "lamp_pendant", "lamp_floor", "lamp_uplight", "lamp_table", "lamp_wall", "led_strip", "lamp_bollard", "lamp_garden"],
   living: ["sofa", "sofa_l", "sofa_u", "armchair", "stool", "coffee_table", "tv_board", "tv_wall", "sideboard", "shelf", "plant", "rug"],
   dining: ["table", "table_round", "chair", "bench", "corner_bench", "bar_stool"],
-  kitchen: ["kitchen", "kitchen_wall", "kitchen_tall", "island", "worktop", "sink", "stove", "dishwasher", "fridge"],
+  kitchen: ["kitchen", "kitchen_wall", "kitchen_tall", "island", "worktop", "sink", "stove", "dishwasher", "fridge", "boiler"],
   sleeping: ["bed", "bunk_bed", "nightstand", "wardrobe", "dresser"],
   bath: ["bathtub", "shower", "wc", "washbasin", "washer", "dryer"],
   work: ["desk", "worktop", "office_chair", "tall_cabinet", "coat_rack", "radiator", "ac_unit", "stairs", "stairs_u", "robot_vacuum"],
@@ -1337,6 +1354,9 @@ export function step(p: Vec2, length: number, dir: Direction): Vec2 {
  * Height of the bottom of a built-in model as drawn (a wall cabinet hangs at 1.45 m, a wall TV is
  * centred at 1.3 m, a radiator stands on short brackets); the mount height replaces it.
  */
+/** Height of a wall-hung boiler's bottom edge (pipes run down from it). */
+export const BOILER_Y = 1.4;
+
 export function builtinBase(f: Pick<Furniture, "type" | "h"> & { variant?: string | null }): number {
   switch (f.type) {
     case "home_battery":
@@ -1351,6 +1371,8 @@ export function builtinBase(f: Pick<Furniture, "type" | "h"> & { variant?: strin
     case "ac_unit":
       // an air conditioner's indoor unit hangs high on the wall
       return 2.05;
+    case "boiler":
+      return BOILER_Y;
     case "awning":
       // the cassette over a terrace door
       return 2.3;
@@ -1381,6 +1403,7 @@ export const ELECTRIC_FURNITURE = new Set<string>([
   ...LAMP_TYPES,
   "radiator",
   "ac_unit",
+  "boiler",
   "awning",
   "robot_vacuum",
   "inverter",
@@ -1463,6 +1486,8 @@ export const FURNITURE_SIZE: Record<FurnitureType, [number, number, number]> = {
   lamp_garden: [0.12, 0.12, 0.3],
   radiator: [1.0, 0.1, 0.6],
   ac_unit: [0.85, 0.22, 0.3],
+  // a wall-hung gas boiler (combi): hot water and heating
+  boiler: [0.44, 0.34, 0.72],
   // width along the wall, the projection (how far it reaches out fully extended), the cassette
   awning: [3.0, 2.5, 0.22],
   // a 240 l wheelie bin; a wall mailbox

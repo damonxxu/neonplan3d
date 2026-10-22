@@ -5,7 +5,7 @@
 
 import { Color } from "three";
 import type { Furniture, Vec2 } from "../model.ts";
-import { builtinBase, stairsULayout, POOL_VALVE_Y } from "../model.ts";
+import { BOILER_Y, builtinBase, stairsULayout, POOL_VALVE_Y } from "../model.ts";
 import { mountBase, packItem, packMotion, packMovingPart, packScreen, type PackItem, type PackMotion } from "../packs.ts";
 import { binColors, binShape, householdCountry, mailboxShape, type BinShape, type MailboxShape } from "../household.ts";
 import type { Floor } from "../model.ts";
@@ -1131,6 +1131,21 @@ function acUnit(b: Builder, w: number, d: number, h: number): void {
   b.seg(w / 2 - 0.14, y0 + h * 0.75, d / 2 + 0.002, w / 2 - 0.07, y0 + h * 0.75, d / 2 + 0.002, EDGE_GLOW);
 }
 
+/** A wall-hung gas boiler: a white case with a display and a flame window, four pipes running down from it. */
+function boiler(b: Builder, w: number, d: number, h: number): void {
+  const y0 = BOILER_Y;
+  const z = d / 2;
+  b.box(-w / 2, w / 2, y0, y0 + h, -d / 2, d / 2, C.white, C.whiteTop, EDGE_FURN);
+  // the control panel below the front cover, with its display
+  b.seg(-w / 2 + 0.02, y0 + 0.12, z + 0.002, w / 2 - 0.02, y0 + 0.12, z + 0.002, EDGE_FAINT);
+  b.box(-w * 0.18, w * 0.18, y0 + 0.035, y0 + 0.09, z, z + 0.006, C.dark, C.dark, EDGE_GLOW);
+  // the flame window in the front cover
+  b.box(-w * 0.08, w * 0.08, y0 + h * 0.55, y0 + h * 0.65, z, z + 0.004, C.dark);
+  // gas, heating flow and return, cold and hot water: pipes down to the wall below
+  const pipes = [-0.36, -0.12, 0.12, 0.36];
+  for (const px of pipes) b.cyl(px * w, -d / 2 + 0.07, 0.012, Math.max(0, y0 - 0.25), y0, C.metal, C.metal, 8);
+}
+
 /** A ring of glowing line on a front face (z = front), for dials and fans. */
 function ring(b: Builder, cx: number, cy: number, r: number, z: number, n = 20): void {
   for (let i = 0; i < n; i++) {
@@ -1637,6 +1652,9 @@ function buildFurniture(buf: GeoBuffer, lines: LineBuffer, shadow: GeoBuffer, f:
     case "ac_unit":
       acUnit(b, w, d, h);
       return;
+    case "boiler":
+      boiler(b, w, d, h);
+      return; // on the wall, no shadow on the floor
     case "inverter":
       inverter(b, w, d, h, f.variant ?? null);
       return;

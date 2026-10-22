@@ -86,6 +86,7 @@ export class Floorplan3dPanel extends LitElement {
     _optsOpen: { state: true },
     _accent: { state: true },
     _bgOn: { state: true },
+    _pinScale: { state: true },
     _backdrop: { state: true },
     _bgUpload: { state: true },
     _weather: { state: true },
@@ -144,6 +145,7 @@ export class Floorplan3dPanel extends LitElement {
   private declare _accent: string | null;
   /** An own background behind the house instead of the look's sky (switch after FPS); remembered on this device. */
   private declare _bgOn: boolean;
+  private declare _pinScale: number;
   /** That background: a colour or a picture with blur, dim, colour and vignette. */
   private declare _backdrop: Backdrop;
   /** A picture is being uploaded ("busy"), or the upload failed ("error"). */
@@ -192,6 +194,8 @@ export class Floorplan3dPanel extends LitElement {
     const accent = prefs.get("accent");
     this._accent = accent && /^#[0-9a-f]{6}$/i.test(accent) ? accent : null;
     this._bgOn = prefs.get("backdrop_on") === "1";
+    const pinScale = Number(prefs.get("pin_scale"));
+    this._pinScale = pinScale >= 0.5 && pinScale <= 1.5 ? pinScale : 1;
     this._backdrop = readBackdrop(this.storedBackdrop());
     this._bgUpload = null;
     this._furnish = false;
@@ -707,6 +711,19 @@ export class Floorplan3dPanel extends LitElement {
                     </button>`,
                 )}
               </div>
+              <label class="fp3d-bg-range" title=${this.t("pin_scale_hint")}
+                >${this.t("pin_scale")} ${Math.round(this._pinScale * 100)} %
+                <input
+                  type="range"
+                  min="0.5"
+                  max="1.5"
+                  step="0.05"
+                  .value=${String(this._pinScale)}
+                  @input=${(e: Event) => {
+                    this._pinScale = Number((e.target as HTMLInputElement).value);
+                    prefs.set("pin_scale", String(this._pinScale));
+                  }}
+              /></label>
               <div class="fp3d-seg fp3d-quality" role="group" aria-label=${this.t("controls_side")} title=${this.t("controls_side")}>
                 ${([false, true] as const).map(
                   (right) =>
@@ -1007,6 +1024,7 @@ export class Floorplan3dPanel extends LitElement {
           .explode=${this._explode}
           .keepRoof=${this._keepRoof}
           .markerMode=${this._markers}
+          .pinScale=${this._pinScale}
           .heatMode=${this._heat}
           .theme=${this._theme}
           .accent=${this._accent}

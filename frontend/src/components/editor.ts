@@ -24,6 +24,7 @@ import { BIN_SHAPES, BIN_SIZE, binColors, binShape, householdCountry, isPackPlan
 import { poolEntities, type PoolEntities } from "../pool.ts";
 import { nearestOnOutline, poolFlow, waterColor, type PoolDeviceType } from "../pool-flow.ts";
 import { cameraMotionSensors, detectionKind } from "../markers.ts";
+import { PIN_MAX } from "../pins.ts";
 import { setVoiceHere, setVoicePipeline, voiceOnHere, voicePipeline } from "../load-voice.ts";
 import { doorbellCamera, doorbellEntities, directorOnHere, HOLD_DEFAULT, HOLD_MAX, HOLD_MIN, setDirectorHere, type DirectorSettings } from "../director.ts";
 import { deviceSensors, energySummary, flowSegments, gridPoint, powerSensorFor, proposeEnergySensors, type EnergyPrefs, type FlowSegment, proposeMeters } from "../energy.ts";
@@ -110,6 +111,7 @@ import {
   type RoofType,
   type Placement,
   type Opening,
+  type PinItem,
   type OpeningType,
   type Room,
   type Vec2,
@@ -189,13 +191,13 @@ const HISTORY = 100;
 /** Wall view side bar: what stands or hangs at a wall, by kind. */
 const WALL_CATS: Record<string, string[]> = {
   base: ["kitchen", "sink", "stove", "dishwasher", "sideboard", "dresser", "tv_board", "nightstand", "washbasin", "washer", "dryer", "worktop", "desk"],
-  hang: ["kitchen_wall", "tv_wall", "shelf", "lamp_wall", "radiator", "ac_unit", "led_strip"],
+  hang: ["kitchen_wall", "tv_wall", "shelf", "lamp_wall", "radiator", "ac_unit", "boiler", "led_strip"],
   tall: ["kitchen_tall", "fridge", "wardrobe", "tall_cabinet", "shelf", "coat_rack"],
   living: ["sofa", "armchair", "bed", "bunk_bed", "bench", "corner_bench", "plant"],
   light: ["lamp_wall", "lamp_floor", "led_strip", "lamp_table"],
 };
 /** Hanging pieces (they go into a gap high on the wall). */
-const HANGING = new Set(["kitchen_wall", "tv_wall", "lamp_wall", "shelf", "led_strip", "ac_unit"]);
+const HANGING = new Set(["kitchen_wall", "tv_wall", "lamp_wall", "shelf", "led_strip", "ac_unit", "boiler"]);
 /** Cabinets built to measure: in a gap they take its width. */
 const WALL_FIT = new Set(["kitchen", "kitchen_wall", "kitchen_tall", "sideboard", "dresser", "tv_board", "worktop", "wardrobe", "tall_cabinet", "shelf", "desk"]);
 /** The narrowest a fitted piece may become (a 29 cm desk is no desk). */
@@ -10344,7 +10346,8 @@ export class Fp3dEditor extends LitElement {
             >
           </div>`
         : nothing}
-      ${isElectric(f.type) ? this.renderFurnitureLinks(f) : !NO_STATE_TYPES.has(f.type) ? html`<div class="fp3d-form fp3d-links">${this.renderStateLinks(f)}</div>` : nothing} ${f.type === "parking" ? this.renderParkingForm(f) : nothing} ${f.type === "waste_bin" || f.type === "mailbox" ? this.renderHouseholdForm(f) : this.renderHouseholdExtras(f)}
+      ${isElectric(f.type) ? this.renderFurnitureLinks(f) : !NO_STATE_TYPES.has(f.type) ? html`<div class="fp3d-form fp3d-links">${this.renderStateLinks(f)}</div>` : nothing}
+      ${!isLamp(f.type) ? this.renderPinItems(f) : nothing} ${f.type === "parking" ? this.renderParkingForm(f) : nothing} ${f.type === "waste_bin" || f.type === "mailbox" ? this.renderHouseholdForm(f) : this.renderHouseholdExtras(f)}
       ${f.type.startsWith("pack:mastershort.vehicles:") && this.isAdmin
         ? html`<section>
             <p class="fp3d-sub">${this.t("vehicle_to_spot_hint")}</p>
@@ -10826,6 +10829,62 @@ export class Fp3dEditor extends LitElement {
           : html`<p class="fp3d-sub fp3d-wide">${this.t("no_persons")}</p>`}
       </div>
       <p class="fp3d-sub">${this.t("presence_hint")}</p>
+    </details>`;
+  }
+
+  /**
+   * Several values in the item's pin (up to three, each with a short label), how a time left is read, the entity that
+   * tells whether the appliance works (resting: only "Idle"), and a boiler's mode that colours its glow.
+   */
+  private renderPinItems(f: Furniture) {
+    const admin = this.isAdmin;
+    const items = f.pin_items ?? [];
+    const sensors = this.entityOptions((id) => /^(sensor|binary_sensor|switch|input_boolean|input_number|climate|number|select)\./.test(id));
+    const states = this.entityOptions((id) => /^(sensor|binary_sensor|switch|input_boolean)\./.test(id));
+    const set = (i: number, patch: Partial<PinItem> | null) => {
+      const next = items.map((it) => ({ ...it }));
+      if (patch === null) next.splice(i, 1);
+      else next[i] = { ...next[i], ...patch };
+      this.updateFurniture({ pin_items: next });
+    };
+    // "hm": hours with a minutes sensor (an empty one while it is not picked yet)
+    const format = (it: PinItem) => (it.minutes != null ? "hm" : it.duration ? "min" : "value");
+    return html`<details class="fp3d-section" ?open=${items.length > 0}>
+      <summary>${this.t("pin_items")}</summary>
+      <div class="fp3d-form">
+        ${items.map(
+          (it, i) => html`${this.entitySelect(`${i + 1}.`, it.entity || null, undefined, sensors, (v) => (v && v !== "none" ? set(i, { entity: v }) : set(i, null)))}
+            <label class="fp3d-field"
+              >${this.t("pin_label")}
+              <input ?disabled=${!admin} maxlength="6" .value=${it.label ?? ""} @change=${(e: Event) => set(i, { label: (e.target as HTMLInputElement).value.trim() || null })}
+            /></label>
+            <label class="fp3d-field"
+              >${this.t("pin_format")}
+              <select
+                ?disabled=${!admin}
+                @change=${(e: Event) => {
+                  const v = (e.target as HTMLSelectElement).value;
+                  set(i, { duration: v === "min" || undefined, minutes: v === "hm" ? (it.minutes ?? "") : null });
+                }}
+              >
+                ${(["value", "min", "hm"] as const).map((k) => html`<option value=${k} ?selected=${format(it) === k}>${this.t(`pin_format_${k}`)}</option>`)}
+              </select></label
+            >
+            ${format(it) === "hm"
+              ? this.entitySelect(this.t("pin_minutes"), it.minutes || null, undefined, sensors, (v) => set(i, { minutes: v === "none" || !v ? "" : v }))
+              : nothing}`,
+        )}
+        ${items.length < PIN_MAX && admin
+          ? html`<button class="fp3d-wide" @click=${() => this.updateFurniture({ pin_items: [...items, { entity: "", label: null }] })}>${this.t("pin_add")}</button>`
+          : nothing}
+        ${items.length
+          ? this.entitySelect(this.t("pin_busy"), f.pin_busy ?? null, undefined, states, (v) => this.updateFurniture({ pin_busy: v === "none" ? null : v }))
+          : nothing}
+        ${f.type === "boiler"
+          ? this.entitySelect(this.t("boiler_mode"), f.mode_entity ?? null, undefined, sensors, (v) => this.updateFurniture({ mode_entity: v === "none" ? null : v }))
+          : nothing}
+        <p class="fp3d-sub fp3d-wide">${this.t("pin_items_hint")}</p>
+      </div>
     </details>`;
   }
 

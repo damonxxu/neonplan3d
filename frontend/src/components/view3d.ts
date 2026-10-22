@@ -100,6 +100,7 @@ import "./quick-menu.ts";
 import { load3d } from "../load3d.ts";
 import { loadFun } from "../load-fun.ts";
 import { detectionKind, scaleGlow, buildMarkers, cameraMotionSensors, openMoreInfo, stateText, toggleEntity } from "../markers.ts";
+import { pinBusy, pinText } from "../pins.ts";
 import { roofUnderAt, sectionCutsBelow } from "../roof-sections.ts";
 import { centroid, furnitureFootprint, isLamp, setTerrain, poolFloorY, LAMP_MODEL, LIFT_SPOTS, outdoorGround, pointInPolygon, poolWaterY, spotDepth, surfaceHeight, zonesOf, type Building, type Floor, type Furniture, type Pet, type StartView } from "../model.ts";
 import { poolAreas, poolLinksWithDevices, poolState, poolWaterGlow, type PoolState } from "../pool.ts";
@@ -166,6 +167,7 @@ export class Fp3dView3d extends LitElement {
     explode: { type: Boolean },
     keepRoof: { attribute: false },
     markerMode: { attribute: false },
+    pinScale: { attribute: false },
     markerNames: { attribute: false },
     heatMode: { attribute: false },
     theme: { attribute: false },
@@ -276,6 +278,8 @@ export class Fp3dView3d extends LitElement {
   /** The roof stays while zooming in (no lift, no fade). */
   declare keepRoof: boolean;
   declare markerMode: MarkerMode;
+  /** Size of the pins and room names (1 = as designed; the panel keeps one per device). */
+  declare pinScale: number;
   /** Card option marker_names: every device with an own name shows it under its pin. */
   declare markerNames: boolean;
   declare heatMode: HeatMode;
@@ -539,6 +543,7 @@ export class Fp3dView3d extends LitElement {
     this.explode = true;
     this.keepRoof = false;
     this.markerMode = "important";
+    this.pinScale = 1;
     this.heatMode = "none";
     this.theme = "neon";
     this.accent = null;
@@ -798,6 +803,7 @@ export class Fp3dView3d extends LitElement {
 
   protected updated(changed: PropertyValues): void {
     if (changed.has("hass") && this.live?.el) this.live.el.hass = this.hass;
+    if (changed.has("pinScale")) this.style.setProperty("--fp3d-pin-scale", String(Math.min(1.5, Math.max(0.5, this.pinScale || 1))));
     // the star menu closes when a room or another floor is chosen (#220)
     if (this._central && ((changed.has("roomId") && changed.get("roomId") !== undefined) || (changed.has("floorId") && changed.get("floorId") !== undefined))) this._central = false;
     const v = this.viewer;
@@ -2530,7 +2536,10 @@ export class Fp3dView3d extends LitElement {
         const car = autoPro ? carState(hass, f) : null;
         // Haushalt Pro: a washer with only its time left still gets its pin
         const appliance = f.type === "washer" || f.type === "dryer" || f.type === "dishwasher";
-        const extraRef = f.type === "home_battery" ? f.soc : f.type === "wallbox" ? f.status : f.type === "parking" && car ? (f.car?.device ?? car.entities.soc) : household && appliance ? (f.remaining ?? null) : null;
+        // an item with several values in its pin gets that pin even without a linked entity
+        const pinned = pinText(hass, f);
+        const pinRef = pinned !== null ? (f.pin_items?.find((i) => i.entity && i.entity !== "none")?.entity ?? null) : null;
+        const extraRef = f.type === "home_battery" ? f.soc : f.type === "wallbox" ? f.status : f.type === "parking" && car ? (f.car?.device ?? car.entities.soc) : household && appliance && f.remaining ? f.remaining : pinRef;
         const extra = extraRef && extraRef !== "none" ? extraRef : null;
         const link = linked ?? (extra ? { entity: null, power: null } : undefined);
         if (!link) continue;
@@ -2551,7 +2560,8 @@ export class Fp3dView3d extends LitElement {
         }
         // an own threshold for appliances behind a smart plug that draw a few watts on standby (null: 10 W)
         const runW = typeof f.run_w === "number" && f.run_w > 0 ? f.run_w : 10;
-        const running = (power ?? 0) > runW || st?.state === "on" || st?.state === "running" || (isStatusSensor(st) && isActive(st));
+        const busy = pinBusy(hass, f);
+        const running = busy ?? ((power ?? 0) > runW || st?.state === "on" || st?.state === "running" || (isStatusSensor(st) && isActive(st)));
         // the live director notices a program ending (a washer done) from the same reading
         if (appliance) this.appliances.set(f.id, { floorId: floor.id, x: f.x, z: f.z, entity: link.entity ?? link.power ?? f.id, running });
         // Haushalt Pro: a washer, dryer or dishwasher tells the time left while it runs and "finished" afterwards –
@@ -2648,7 +2658,7 @@ export class Fp3dView3d extends LitElement {
           name: f.name || (link.entity ? entityName(hass, link.entity) : furnitureName(hass, f.type)),
           ownName: f.name || undefined,
           showName: !!f.show_name,
-          text: hhText ??
+          text: pinned ?? hhText ??
             (car
               ? this.carText(hass, car, !!st && !PRESENT_STATES.has(st.state.toLowerCase()))
               : f.type === "home_battery"
@@ -2662,7 +2672,7 @@ export class Fp3dView3d extends LitElement {
                     : power !== null
                       ? formatPower(hass, Math.max(0, power))
                       : ""),
-          active: hhText ? true : car ? car.charging : st ? isActive(st) : (power ?? 0) > (typeof f.run_w === "number" && f.run_w > 0 ? f.run_w : 5),
+          active: busy !== null ? busy : hhText ? true : car ? car.charging : st ? isActive(st) : (power ?? 0) > (typeof f.run_w === "number" && f.run_w > 0 ? f.run_w : 5),
           unavailable: st ? isUnavailable(st) : false,
           glow: null,
           // its pin grabs the item when furnishing
@@ -2911,7 +2921,7 @@ export class Fp3dView3d extends LitElement {
    * hung on the wall.
    */
   private robotObstacles(floor: Building["floors"][number], room: [number, number][]): [number, number][][] {
-    const OPEN_BELOW = new Set(["rug", "worktop", "table", "table_round", "coffee_table", "chair", "office_chair", "stool", "bar_stool", "bench", "desk", "robot_vacuum", "parking", "stairwell", "radiator", "ac_unit", "tv_wall", "kitchen_wall", "led_strip"]);
+    const OPEN_BELOW = new Set(["rug", "worktop", "table", "table_round", "coffee_table", "chair", "office_chair", "stool", "bar_stool", "bench", "desk", "robot_vacuum", "parking", "stairwell", "radiator", "ac_unit", "boiler", "tv_wall", "kitchen_wall", "led_strip"]);
     return floor.furniture
       .filter((m) => {
         if (OPEN_BELOW.has(m.type) || (m.type.startsWith("lamp_") && m.type !== "lamp_floor" && m.type !== "lamp_uplight")) return false;
@@ -2992,6 +3002,12 @@ export class Fp3dView3d extends LitElement {
       if (!st || isUnavailable(st)) continue;
       const on = isActive(st) || st.state === "home" || st.state === "occupied" || st.state === "on";
       if (!on) continue;
+      if (f.type === "boiler") {
+        // a burning boiler glows all over: warm yellow while it heats water, orange-red for the heating
+        const mode = f.mode_entity && f.mode_entity !== "none" ? (hass.states[f.mode_entity]?.state ?? "") : "";
+        out.push({ part: "shell", color: /采暖|供暖|heat|ch/i.test(mode) ? [1, 0.36, 0.12] : [1, 0.74, 0.3], level: 0.9 });
+        continue;
+      }
       const lit = kindOf(ref) === "light" ? lightGlow(st) : null;
       out.push({ part, color: lit ? lit.color : [1, 0.71, 0.28], level: lit ? lit.level : 0.85 });
     }
@@ -5846,6 +5862,14 @@ export class Fp3dView3d extends LitElement {
       .fp3d-dev-sel {
         outline: 2px solid var(--fp3d-accent);
         outline-offset: 2px;
+      }
+      /* the viewer's own pin size (a smaller one on a phone covers less): the pins' insides grow or shrink */
+      .fp3d-dev > *,
+      .fp3d-pin > * {
+        zoom: var(--fp3d-pin-scale, 1);
+      }
+      .fp3d-pin.fp3d-pin {
+        font-size: calc(12.5px * var(--fp3d-pin-scale, 1));
       }
       .fp3d-dev-on {
         color: #2a1a00;

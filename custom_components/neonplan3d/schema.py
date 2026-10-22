@@ -203,6 +203,16 @@ _VEHICLE_TYPE_SCHEMA = vol.Schema(
 # the kinds of waste a bin can take (household.ts WASTE_KINDS)
 WASTE_KINDS = ["rest", "bio", "paper", "plastic", "glass", "garden", "recycling", "other"]
 
+# one value in an item's pin (pins.ts): a sensor with a short label; hours with a minutes sensor, or minutes as H:MM
+PIN_ITEM_SCHEMA = vol.Schema(
+    {
+        vol.Required("entity"): vol.All(str, vol.Length(max=255)),
+        vol.Optional("label", default=None): vol.Any(None, vol.All(str, vol.Length(max=12))),
+        vol.Optional("minutes", default=None): vol.Any(None, vol.All(str, vol.Length(max=255))),
+        vol.Optional("duration", default=False): bool,
+    }
+)
+
 FURNITURE_SCHEMA = vol.Schema(
     {
         vol.Required("id"): _ID,
@@ -259,6 +269,10 @@ FURNITURE_SCHEMA = vol.Schema(
         vol.Optional("state_entity", default=None): vol.Any(None, vol.All(str, vol.Length(max=255))),
         vol.Optional("state_entity2", default=None): vol.Any(None, vol.All(str, vol.Length(max=255))),
         vol.Optional("state_split", default=None): vol.Any(None, vol.In(["left_right", "top_bottom"])),
+        # several values in its pin, an entity telling whether it works, a boiler's mode colouring its glow
+        vol.Optional("pin_items", default=list): vol.All([PIN_ITEM_SCHEMA], vol.Length(max=6)),
+        vol.Optional("pin_busy", default=None): _ENTITY_REF,
+        vol.Optional("mode_entity", default=None): _ENTITY_REF,
         # lamps: a second entity with the colour and brightness (a relay switches, the bulb knows its colour)
         vol.Optional("color_entity", default=None): vol.Any(None, vol.All(str, vol.Length(max=255))),
         # mirrored left-right
