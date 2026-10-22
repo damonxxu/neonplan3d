@@ -1511,6 +1511,7 @@
  "pin_minutes": "分钟传感器",
  "pin_add": "+ 添加一项",
  "pin_busy": "运行状态（空闲时只显示 Idle）",
+ "pin_phase": "程序阶段（自动判断时显示 Auto，结束后显示 Done）",
  "boiler_mode": "工作模式（热水/采暖，决定发光颜色）",
  "pin_scale": "图标大小",
  "pin_scale_hint": "3D 中所有标记和房间名的大小——手机上调小可以少挡住东西（只对这台设备生效）。",

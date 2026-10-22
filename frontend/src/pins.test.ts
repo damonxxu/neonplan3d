@@ -39,3 +39,14 @@ test("a resting appliance only says Idle, a working one its values", () => {
   assert.equal(pinBusy(busy, { pin_busy: "sensor.phase" }), true);
   assert.equal(pinBusy(busy, { pin_busy: null }), null);
 });
+
+test("while it works out its program the pin says Auto, afterwards Done, then the countdown", () => {
+  const f = { pin_items: [{ entity: "sensor.left", duration: true }], pin_busy: "sensor.phase", pin_phase: "sensor.phase" };
+  const at = (phase: string, left: string) => hassOf(st("sensor.phase", phase), st("sensor.left", left));
+  assert.equal(pinText(at("待机状态", "120"), f), "Idle");
+  assert.equal(pinText(at("自动判断负载中", "188"), f), "Auto");
+  assert.equal(pinText(at("加热2", "31"), f), "0:31");
+  assert.equal(pinText(at("防皱", "0"), f), "Done");
+  // working without a time: it chooses itself
+  assert.equal(pinText(at("洗涤", "0"), { ...f, pin_phase: null }), "Auto");
+});

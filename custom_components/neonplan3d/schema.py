@@ -272,6 +272,7 @@ FURNITURE_SCHEMA = vol.Schema(
         # several values in its pin, an entity telling whether it works, a boiler's mode colouring its glow
         vol.Optional("pin_items", default=list): vol.All([PIN_ITEM_SCHEMA], vol.Length(max=6)),
         vol.Optional("pin_busy", default=None): _ENTITY_REF,
+        vol.Optional("pin_phase", default=None): _ENTITY_REF,
         vol.Optional("mode_entity", default=None): _ENTITY_REF,
         # lamps: a second entity with the colour and brightness (a relay switches, the bulb knows its colour)
         vol.Optional("color_entity", default=None): vol.Any(None, vol.All(str, vol.Length(max=255))),

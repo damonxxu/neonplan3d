@@ -254,6 +254,8 @@ export interface Furniture {
   pin_items?: PinItem[];
   /** With pin items: while this entity is idle (off, standby) the pin only says "Idle", else it shows the items. */
   pin_busy?: EntityRef;
+  /** With pin items: the appliance's phase – while it works out its program the pin says "Auto", after it "Done". */
+  pin_phase?: EntityRef;
   /** Boiler: what it heats right now (hot water or the heating) – the colour of its glow. */
   mode_entity?: EntityRef;
   /** Lamps: a second entity whose colour and brightness the lamp shows while the linked switch is on (a relay switches the light, the bulb itself knows its colour). */

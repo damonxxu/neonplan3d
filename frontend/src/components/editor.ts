@@ -10878,7 +10878,8 @@ export class Fp3dEditor extends LitElement {
           ? html`<button class="fp3d-wide" @click=${() => this.updateFurniture({ pin_items: [...items, { entity: "", label: null }] })}>${this.t("pin_add")}</button>`
           : nothing}
         ${items.length
-          ? this.entitySelect(this.t("pin_busy"), f.pin_busy ?? null, undefined, states, (v) => this.updateFurniture({ pin_busy: v === "none" ? null : v }))
+          ? html`${this.entitySelect(this.t("pin_busy"), f.pin_busy ?? null, undefined, states, (v) => this.updateFurniture({ pin_busy: v === "none" ? null : v }))}
+            ${this.entitySelect(this.t("pin_phase"), f.pin_phase ?? null, undefined, states, (v) => this.updateFurniture({ pin_phase: v === "none" ? null : v }))}`
           : nothing}
         ${f.type === "boiler"
           ? this.entitySelect(this.t("boiler_mode"), f.mode_entity ?? null, undefined, sensors, (v) => this.updateFurniture({ mode_entity: v === "none" ? null : v }))

@@ -5,6 +5,11 @@ import { stateText } from "./markers.ts";
 import type { Furniture, PinItem } from "./model.ts";
 import type { HassEntity, HomeAssistant } from "./types.ts";
 
+/** Phases in which an appliance still works out its program (no countdown yet): "Auto". */
+const AUTO = /自动|智能|判断|称重|auto|smart|sensing|detect|weigh/i;
+/** Phases after the program: "Done". */
+const DONE = /结束|完成|防皱|done|finish|end|complete|anti.?crease|anti.?wrinkle/i;
+
 /** At most this many values stand in one pin. */
 export const PIN_MAX = 3;
 
@@ -28,13 +33,15 @@ export function compactValue(hass: HomeAssistant | undefined, st: HassEntity | u
   return `${num}${unit}`;
 }
 
-function itemText(hass: HomeAssistant, item: PinItem): string {
+function itemText(hass: HomeAssistant, item: PinItem, busy: boolean): string {
   const st = hass.states[item.entity];
   let value: string;
   if (item.minutes || item.duration) {
     const h = Number(st?.state);
     const m = item.minutes ? Number(hass.states[item.minutes]?.state) : 0;
-    value = Number.isFinite(h) && Number.isFinite(m) && !isUnavailable(st) ? hm(item.minutes ? h * 60 + m : h) : "–";
+    const total = item.minutes ? h * 60 + m : h;
+    // a working appliance without a time (yet) chooses its program itself
+    value = Number.isFinite(total) && !isUnavailable(st) && (!busy || total > 0) ? hm(total) : busy ? "Auto" : "–";
   } else value = compactValue(hass, st);
   const label = item.label?.trim();
   return label ? `${label} ${value}` : value;
@@ -50,10 +57,19 @@ export function pinBusy(hass: HomeAssistant, f: Pick<Furniture, "pin_busy">): bo
   return kindOf(st.entity_id) === "sensor" ? !IDLE.test(st.state.trim()) : isActive(st);
 }
 
-/** The pin text of an item with pin items (null: it has none): "Idle" while its appliance rests. */
-export function pinText(hass: HomeAssistant, f: Pick<Furniture, "pin_items" | "pin_busy">): string | null {
+/**
+ * The pin text of an item with pin items (null: it has none): "Idle" while its appliance rests, "Auto" while its
+ * phase says it still works out the program (a dryer sensing the load), "Done" after the program, else the values.
+ */
+export function pinText(hass: HomeAssistant, f: Pick<Furniture, "pin_items" | "pin_busy" | "pin_phase">): string | null {
   const items = (f.pin_items ?? []).filter((i) => i.entity && i.entity !== "none").slice(0, PIN_MAX);
   if (!items.length) return null;
-  if (pinBusy(hass, f) === false) return "Idle";
-  return items.map((i) => itemText(hass, i)).join(" · ");
+  const busy = pinBusy(hass, f);
+  if (busy === false) return "Idle";
+  const phase = f.pin_phase && f.pin_phase !== "none" ? hass.states[f.pin_phase] : undefined;
+  if (phase && !isUnavailable(phase)) {
+    if (DONE.test(phase.state)) return "Done";
+    if (AUTO.test(phase.state)) return "Auto";
+  }
+  return items.map((i) => itemText(hass, i, busy === true)).join(" · ");
 }
