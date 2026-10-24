@@ -11335,6 +11335,29 @@ export class Fp3dEditor extends LitElement {
         ${this.entitySelect(this.t("parking_entity"), f.entity ?? null, undefined, presence, (v) => this.updateFurniture({ entity: v === "none" ? null : v }))}
         <label class="fp3d-field fp3d-wide">${this.t("parking_vehicle")} ${vehicleSelect(f.vehicle ?? null, (v) => this.updateFurniture({ vehicle: v }))}</label>
         ${vehicles.length ? nothing : html`<p class="fp3d-sub fp3d-wide">${this.t("parking_no_pack")}</p>`}
+        ${f.vehicle && vehicles.length > 1
+          ? html`<div class="fp3d-wide">
+              <div class="fp3d-sub">${this.t("vehicle_alts")}</div>
+              ${vehicles
+                .filter((v) => v.id !== f.vehicle)
+                .map(
+                  (v) => html`<label class="fp3d-check"
+                    ><input
+                      type="checkbox"
+                      .checked=${(f.vehicle_alts ?? []).includes(v.id)}
+                      ?disabled=${!admin}
+                      @change=${(ev: Event) => {
+                        const on = (ev.target as HTMLInputElement).checked;
+                        const rest = (f.vehicle_alts ?? []).filter((x) => x !== v.id);
+                        this.updateFurniture({ vehicle_alts: on ? [...rest, v.id] : rest });
+                      }}
+                    />
+                    ${v.label}</label
+                  >`,
+                )}
+              <p class="fp3d-sub">${this.t("vehicle_alts_hint")}</p>
+            </div>`
+          : nothing}
         ${this.num(this.t("parking_scale"), Math.round((f.scale ?? 1) * 100), (v) => this.updateFurniture({ scale: Math.min(150, Math.max(30, v)) / 100 }), 5, 30)}
         ${this.entitySelect(this.t("parking_type_entity"), f.type_entity ?? null, undefined, typeSensors, (v) => this.updateFurniture({ type_entity: v === "none" ? null : v }))}
         ${f.type_entity
@@ -11788,6 +11811,10 @@ export class Fp3dEditor extends LitElement {
             >`
           : nothing}
         ${this.iconInput(pl.icon, (v) => this.updateDevice({ icon: v }))}
+        <label class="fp3d-check fp3d-wide"
+          ><input type="checkbox" .checked=${!!pl.detail} ?disabled=${!admin} @change=${(ev: Event) => this.updateDevice({ detail: (ev.target as HTMLInputElement).checked || undefined })} />
+          ${this.t("detail_card")}</label
+        >
       </div>
       ${this.renderPinItems(pl, (p) => this.updateDevice(p))}
       ${admin

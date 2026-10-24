@@ -67,3 +67,11 @@ test("own words for the states, and a problem still shows while it rests", () =>
   assert.equal(pinText(at("on"), f), "待机 · Food !");
   assert.equal(pinText(at("off"), { ...f, pin_texts: { idle: "  " } }), "Idle");
 });
+
+test("money shows with its currency sign", () => {
+  const st = (state: string, unit: string) => ({ entity_id: "sensor.balance", state, attributes: { device_class: "monetary", unit_of_measurement: unit } }) as never;
+  assert.equal(compactValue({ language: "zh-Hans" } as never, st("53.77", "CNY")), "¥53.77");
+  assert.match(compactValue({ language: "de" } as never, st("12.4", "EUR")), /^12,40\s?€$/);
+  // not a currency code: as before
+  assert.equal(compactValue({ language: "en" } as never, st("3", "points")), "3points");
+});

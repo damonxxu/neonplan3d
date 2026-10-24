@@ -290,6 +290,8 @@ export interface Furniture {
   /** Parking spots: a sensor naming the kind of vehicle, and which vehicle each state means. */
   type_entity?: string | null;
   types?: { state: string; vehicle: string }[];
+  /** Parking spots: further vehicles a button in the 3D view switches to (each viewer keeps its choice). */
+  vehicle_alts?: string[];
 }
 
 export type LampMount = "ceiling" | "floor" | "table" | "wall";
@@ -340,6 +342,8 @@ export interface Placement {
   pin_busy?: EntityRef;
   pin_phase?: EntityRef;
   pin_texts?: PinTexts | null;
+  /** A tap opens a card with every value of the entity's device instead of Home Assistant's dialog. */
+  detail?: boolean;
 }
 
 export interface Background {

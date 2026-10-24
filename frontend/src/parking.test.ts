@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { newFloor, type Furniture } from "./model.ts";
 import { setPacks } from "./packs.ts";
-import { parkedVehicle, parkingEntities, vehicleFurniture, withVehicles } from "./parking.ts";
+import { nextVehicle, parkedVehicle, parkedVehicles, parkingEntities, vehicleChoices, vehicleFurniture, withVehicles } from "./parking.ts";
 import type { HomeAssistant } from "./types.ts";
 
 const VAN = "pack:t.cars:van";
@@ -63,4 +63,22 @@ test("the parked vehicle becomes furniture of the pack item's size times the spo
   const floor = { ...newFloor("f", "F", 0), furniture: [spot] };
   assert.equal(withVehicles(floor, new Map()).furniture.length, 1);
   assert.equal(withVehicles(floor, new Map([["p1", parkedVehicle(hass, spot)!]])).furniture.length, 2);
+});
+
+test("a switch button walks through the spot's vehicles, and the choice wins over the default", () => {
+  const { hass, spot } = setup();
+  const alts = { ...spot, entity: null, vehicle_alts: [SUV, VAN, "pack:t.cars:gone"] };
+  assert.deepEqual(vehicleChoices(alts), [VAN, SUV]);
+  assert.equal(nextVehicle(alts, VAN), SUV);
+  assert.equal(nextVehicle(alts, SUV), VAN);
+  assert.equal(nextVehicle(alts, null), VAN);
+  assert.equal(nextVehicle(spot, VAN), null);
+  assert.equal(parkedVehicle(hass, alts, SUV), SUV);
+  // a choice the spot does not offer is ignored
+  assert.equal(parkedVehicle(hass, alts, "pack:t.cars:gone"), VAN);
+  const b = { floors: [{ ...newFloor("f", "F", 0), furniture: [alts] }] } as unknown as Parameters<typeof parkedVehicles>[1];
+  assert.equal(parkedVehicles(hass, b, new Map([["p1", SUV]])).get("p1"), SUV);
+  // the presence entity still decides whether a car stands there at all
+  hass.states["binary_sensor.car"].state = "off";
+  assert.equal(parkedVehicle(hass, { ...alts, entity: "binary_sensor.car" }, SUV), null);
 });

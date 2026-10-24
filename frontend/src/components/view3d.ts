@@ -88,8 +88,9 @@ import { HEAT_SCALES, heatColor, heatGradient, roomValues, type HeatMode } from 
 import { furnitureName } from "../furniture-names.ts";
 import { fetchImage, saveBuilding } from "../api.ts";
 import { formatNumber, translate, type I18nKey } from "../i18n.ts";
-import { getPacks, isPackCooktop, isPackType, isRobotVacuum, mountBase, packItem, packMotion, packsVersion } from "../packs.ts";
-import { parkedVehicle, PRESENT_STATES, parkedVehicles, vehicleFurniture } from "../parking.ts";
+import { getPacks, isPackCooktop, isPackType, isRobotVacuum, mountBase, packItem, packItemName, packMotion, packsVersion } from "../packs.ts";
+import { nextVehicle, parkedVehicle, PRESENT_STATES, parkedVehicles, vehicleChoices, vehicleFurniture } from "../parking.ts";
+import { deviceName, deviceValues } from "../detail.ts";
 import { TRAIL_ICON, TRAIL_WINDOW_MS, trailEvents, trailPoints, trailSources, trailTime, type HistoryRow } from "../trail.ts";
 import { limitEffects, weatherEntity, weatherState } from "../weather.ts";
 import { SHOW_PRESENCE } from "../flags.ts";
@@ -154,6 +155,26 @@ function writeFlag(key: string, on: boolean): void {
     localStorage.setItem(key, on ? "1" : "0");
   } catch {
     /* the switch is only not remembered */
+  }
+}
+
+/** The vehicles this browser switched to, by parking spot id. */
+const VEHICLE_KEY = "neonplan3d.vehicles";
+
+function readVehicleChoices(): Map<string, string> {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(VEHICLE_KEY) ?? "{}");
+    return new Map(Object.entries(raw && typeof raw === "object" ? raw : {}).filter((e): e is [string, string] => typeof e[1] === "string"));
+  } catch {
+    return new Map();
+  }
+}
+
+function writeVehicleChoices(choices: ReadonlyMap<string, string>): void {
+  try {
+    localStorage.setItem(VEHICLE_KEY, JSON.stringify(Object.fromEntries(choices)));
+  } catch {
+    /* the choice is only not remembered */
   }
 }
 
@@ -249,6 +270,7 @@ export class Fp3dView3d extends LitElement {
     _sceneFired: { state: true },
     replay: { attribute: false },
     _info: { state: true },
+    _detail: { state: true },
   };
 
   declare hass: HomeAssistant;
@@ -258,6 +280,10 @@ export class Fp3dView3d extends LitElement {
   /** Time travel: a tapped device's state at the replayed moment, next to the finger. */
   private declare _info: { entity: string; x: number; y: number } | null;
   private infoTimer: ReturnType<typeof setTimeout> | undefined;
+  /** A placed device asking for its card (`detail`): every value of its device beside the finger. */
+  private declare _detail: { entity: string; x: number; y: number } | null;
+  /** Vehicles switched with a parking spot's button, by spot id (remembered in this browser). */
+  private vehicleChoice = readVehicleChoices();
   /** The replay's jump counter as last seen (a jump sets doors and blinds at once). */
   private seenSeek = 0;
   /** The replayed moment as last seen; the replay's ticks reach the view through its listener. */
@@ -612,6 +638,7 @@ export class Fp3dView3d extends LitElement {
     this._household = [];
     this._hhFolded = readFlag("neonplan3d.hhFolded");
     this._binInfo = null;
+    this._detail = null;
     this.householdCard = true;
     this.scenes = true;
     this._sceneFired = null;
@@ -737,6 +764,7 @@ export class Fp3dView3d extends LitElement {
       host.addEventListener("pointerdown", (e) => {
         if (this._central && !(e.target as Element | null)?.closest?.(".fp3d-central, .fp3d-central-btn")) this._central = false;
         if (this._info) this._info = null;
+        if (this._detail && !(e.target as Element | null)?.closest?.(".fp3d-detail")) this._detail = null;
       });
       this.viewer = mod.createViewer(host, {
         quality: this.quality,
@@ -818,7 +846,7 @@ export class Fp3dView3d extends LitElement {
       this.shownPacks = packsVersion();
       v.setPacks([...getPacks()]);
       // vehicles in parking spots come from packs too: look them up again now that the packs are here
-      if (this.hass && this.building) v.setParked(parkedVehicles(this.hass, this.building));
+      if (this.hass && this.building) v.setParked(parkedVehicles(this.hass, this.building, this.vehicleChoice));
       // a feature pack may have arrived with them (Energie Pro): the cables and modules follow
       this.syncDevices(true);
     }
@@ -987,7 +1015,7 @@ export class Fp3dView3d extends LitElement {
       roofWindows.set(w.id, { open, tilt: s.tilt, cover: s.cover ?? 0 });
     }
     v.setRoofWindows(roofWindows);
-    v.setParked(parkedVehicles(hass, b));
+    v.setParked(parkedVehicles(hass, b, this.vehicleChoice));
     const types = new Map(b.floors.flatMap((f) => f.openings.map((o) => [o.id, o.type] as const)));
     const openingStates = new Map([...this.openingLinks!].map(([id, e]) => [id, openingState(hass, e, types.get(id))]));
     v.setOpeningStates(openingStates, jump);
@@ -1453,6 +1481,43 @@ export class Fp3dView3d extends LitElement {
   /** Shows the hint of a Pro add-on that is not installed (with the shop link). */
   proHint(feature: Feature): void {
     this._proHint = feature;
+  }
+
+  /** The next vehicle of a parking spot (its own and its alternatives, round the list), remembered here. */
+  private switchVehicle(spotId: string): void {
+    const hass = this.hass;
+    const spot = this.building?.floors.flatMap((f) => f.furniture).find((f) => f.id === spotId);
+    if (!hass || !this.building || !spot) return;
+    const next = nextVehicle(spot, parkedVehicle(hass, spot, this.vehicleChoice.get(spotId)) ?? this.vehicleChoice.get(spotId));
+    if (!next) return;
+    this.vehicleChoice.set(spotId, next);
+    writeVehicleChoices(this.vehicleChoice);
+    this.viewer?.setParked(parkedVehicles(hass, this.building, this.vehicleChoice));
+    this.syncDevices(true);
+  }
+
+  /** The card of a placed device: its device's values, a tap on a row opens that entity. */
+  private renderDetail() {
+    const d = this._detail;
+    const hass = this.hass;
+    if (!d || !hass) return nothing;
+    const pl = this.building?.floors.flatMap((f) => f.placements).find((p) => p.entity_id === d.entity);
+    const title = pl?.name || deviceName(hass, d.entity) || entityName(hass, d.entity);
+    const rows = deviceValues(hass, d.entity);
+    // keep the card inside the view (it is about 260 px wide)
+    const left = Math.max(8, Math.min(d.x + 12, (this.clientWidth || 800) - 272));
+    const top = Math.max(8, Math.min(d.y - 20, (this.clientHeight || 600) - 60 - rows.length * 35));
+    return html`<div class="fp3d-hh fp3d-detail" style="left:${left}px;top:${top}px;right:auto">
+      <div class="fp3d-detail-head">
+        <span>${title}</span>
+        <button aria-label=${translate(hass, "detail_close")} @click=${() => (this._detail = null)}>✕</button>
+      </div>
+      ${rows.map(
+        (r) => html`<button class="fp3d-hh-row fp3d-detail-row" @click=${() => (this.ro ? this.showInfo(r.entity, d.x, d.y) : openMoreInfo(this, r.entity))}>
+          <span>${r.name}</span><b>${r.text}</b>
+        </button>`,
+      )}
+    </div>`;
   }
 
   /** Time travel: a tap shows the device's state at the replayed moment ("on · 60 % · since 07:42"). */
@@ -2530,6 +2595,30 @@ export class Fp3dView3d extends LitElement {
           if ((f.type === "fridge" || f.type === "fridge_smart") && fridgeOpenTooLong(f, hass)) {
             screens.set(f.id, { color: [0.45, 0.85, 1], level: 1, faces: [{ part: "band", color: [0.45, 0.85, 1], level: 1 }] });
             today.push({ icon: "fridge-alert-outline", text: translate(hass, "hh_fridge_open", { name: f.name || furnitureName(hass, f.type) }), entity: doorsOf(f)[0] ?? null });
+          }
+        }
+        // a parking spot with more than one vehicle: a pin over the car switches to the next one (per browser)
+        if (f.type === "parking" && vehicleChoices(f).length > 1) {
+          const shown = parkedVehicle(hass, f, this.vehicleChoice.get(f.id));
+          const item = shown ? packItem(shown) : undefined;
+          if (item) {
+            const room = floor.rooms.find((r) => r.points.length >= 3 && pointInPolygon([f.x, f.z], r.points));
+            markers.push({
+              id: `veh:${f.id}`,
+              floorId: floor.id,
+              roomId: room?.id ?? null,
+              x: f.x,
+              z: f.z,
+              y: item.size[2] * (f.scale ?? 1) + 0.45,
+              icon: mdiIcon("swap-horizontal"),
+              name: translate(hass, "vehicle_switch"),
+              text: packItemName(item, hass.language ?? "en"),
+              active: false,
+              unavailable: false,
+              glow: null,
+              show: "always",
+              fromFurniture: true,
+            });
           }
         }
         const autoPro = f.type === "parking" && hasFeature("auto_pro") && !!f.car;
@@ -4014,6 +4103,17 @@ export class Fp3dView3d extends LitElement {
   private onDeviceTap(entityId: string, x = 0, y = 0): void {
     // trail pins and lamps without a light are drawn, but nothing of Home Assistant stands behind them
     if (entityId.startsWith("trail:") || entityId.startsWith("lamp:")) return;
+    // a parking spot's switch pin: the next vehicle drives in
+    if (entityId.startsWith("veh:")) {
+      this.switchVehicle(entityId.slice(4));
+      return;
+    }
+    // a placed device asking for its card: every value of its device
+    if (this.building?.floors.some((f) => f.placements.some((p) => p.entity_id === entityId && p.detail))) {
+      this._menu = null;
+      this._detail = { entity: entityId, x, y };
+      return;
+    }
     // Haushalt Pro: a bin shows its next pickups; a mailbox's or a plant's pin opens its sensor
     if (entityId.startsWith("hh:")) {
       const [id, furnitureId] = entityId.slice(3).split("#");
@@ -4189,7 +4289,7 @@ export class Fp3dView3d extends LitElement {
       ${layer ? html`<div class="fp3d-backdrop" style=${layer}></div>` : nothing}
       ${layer && this.backdrop?.vignette ? html`<div class="fp3d-backdrop fp3d-vignette"></div>` : nothing}
       ${this._error ? html`<p class="fp3d-error">${this._error}</p>` : nothing} ${this.clean ? nothing : this.renderEnergy()} ${this.renderHologram()} ${this.clean ? nothing : this.renderLegend()}
-      ${this.renderAlerts()} ${this.clean || this._walk ? nothing : html`${this.renderHousehold()} ${this.renderThumbs()} ${this.renderScenes()} ${this.renderFind()} ${this.renderCentral()}`} ${this.clean ? nothing : this.renderWalk()} ${this.renderSwipe()} ${this.renderInfo()} ${this.renderBinInfo()} ${this.renderThrough()} ${this.renderCameraWall()}
+      ${this.renderAlerts()} ${this.clean || this._walk ? nothing : html`${this.renderHousehold()} ${this.renderThumbs()} ${this.renderScenes()} ${this.renderFind()} ${this.renderCentral()}`} ${this.clean ? nothing : this.renderWalk()} ${this.renderSwipe()} ${this.renderInfo()} ${this.renderBinInfo()} ${this.renderDetail()} ${this.renderThrough()} ${this.renderCameraWall()}
       ${this.clean ? nothing : this.renderProHint()} ${this.renderMenu()} ${this.renderEye()}
       ${this.renderMic()}
       ${this._micProbe && this.hass ? html`<fp3d-mic-probe .hass=${this.hass} .building=${this.building} @close=${() => ((this._micProbe = false), micProbeDone())}></fp3d-mic-probe>` : nothing}
@@ -4252,6 +4352,35 @@ export class Fp3dView3d extends LitElement {
       .fp3d-holo-link[style*="--bin"] line,
       .fp3d-holo-link[style*="--bin"] circle {
         stroke: var(--bin);
+      }
+      .fp3d-detail {
+        width: 260px;
+        z-index: 5;
+      }
+      .fp3d-detail-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 13px;
+        font-weight: 600;
+        padding: 3px 6px 5px;
+      }
+      .fp3d-detail .fp3d-detail-head button {
+        padding: 2px 6px;
+        opacity: 0.7;
+        text-align: center;
+      }
+      .fp3d-detail-row {
+        justify-content: space-between;
+      }
+      .fp3d-detail-row span {
+        opacity: 0.8;
+      }
+      .fp3d-detail-row b {
+        font-weight: 600;
+        white-space: nowrap;
+        color: var(--fp3d-accent, #37e0ff);
       }
       .fp3d-bin-info {
         display: flex;

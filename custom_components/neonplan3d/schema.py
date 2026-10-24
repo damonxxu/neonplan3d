@@ -324,6 +324,8 @@ FURNITURE_SCHEMA = vol.Schema(
         vol.Optional("scale", default=1.0): vol.All(vol.Coerce(float), vol.Range(min=0.2, max=2)),
         vol.Optional("type_entity", default=None): vol.Any(None, vol.All(str, vol.Length(max=255))),
         vol.Optional("types", default=[]): vol.All([_VEHICLE_TYPE_SCHEMA], vol.Length(max=20)),
+        # parking spots: further vehicles a button in the 3D view switches to (each viewer keeps its choice)
+        vol.Optional("vehicle_alts", default=list): vol.All([vol.All(str, vol.Length(max=96))], vol.Length(max=8)),
         # furniture block: items with the same group id move and turn together (a kitchen, a wall unit)
         vol.Optional("group", default=None): vol.Any(None, vol.All(str, vol.Length(max=64))),
         # fixed against moving by accident
@@ -339,6 +341,8 @@ PLACEMENT_SCHEMA = vol.Schema(
         vol.Optional("pin_busy", default=None): _ENTITY_REF,
         vol.Optional("pin_phase", default=None): _ENTITY_REF,
         vol.Optional("pin_texts", default=None): PIN_TEXTS_SCHEMA,
+        # a tap opens a card with every value of the entity's device
+        vol.Optional("detail", default=False): bool,
         vol.Required("entity_id"): vol.All(str, vol.Length(max=255)),
         vol.Required("x"): _COORD,
         vol.Required("z"): _COORD,

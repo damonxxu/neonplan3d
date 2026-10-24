@@ -38,6 +38,14 @@ export function compactValue(hass: HomeAssistant | undefined, st: HassEntity | u
   const v = Number(st.state);
   if (kindOf(st.entity_id) !== "sensor" || st.state === "" || !Number.isFinite(v)) return stateText(hass, st);
   const unit = String(st.attributes.unit_of_measurement ?? "").trim();
+  // money in its currency's sign ("¥53.77", "12,40 €"); a unit that is no currency code stays as it is
+  if (st.attributes.device_class === "monetary" && /^[A-Z]{3}$/.test(unit)) {
+    try {
+      return new Intl.NumberFormat(hass?.language, { style: "currency", currency: unit, maximumFractionDigits: 2 }).format(v);
+    } catch {
+      /* an unknown code: the plain number below */
+    }
+  }
   const num = String(Math.round(v * 100) / 100);
   if (unit === "°C" || unit === "°F") return `${num}°`;
   return `${num}${unit}`;

@@ -13,19 +13,34 @@ function ref(id: string | null | undefined): string | null {
   return id && id !== "none" ? id : null;
 }
 
+/** The vehicles a spot can switch between: its own vehicle and its alternatives that a pack still has. */
+export function vehicleChoices(f: Furniture): string[] {
+  const all = [f.vehicle, ...(f.vehicle_alts ?? [])].filter((v): v is string => !!v && !!packItem(v));
+  return [...new Set(all)];
+}
+
+/** The next vehicle of a spot after `current` (round the list), or null when there is nothing to switch. */
+export function nextVehicle(f: Furniture, current: string | null | undefined): string | null {
+  const list = vehicleChoices(f);
+  if (list.length < 2) return null;
+  const i = current ? list.indexOf(current) : -1;
+  return list[(i + 1) % list.length];
+}
+
 /**
  * The vehicle (a pack item type) a parking spot shows right now: none while its presence entity
- * reports no car, the vehicle its type sensor names, else its default vehicle. Without a presence
- * entity the vehicle stands there always.
+ * reports no car, the vehicle its type sensor names, else the vehicle chosen with the switch button
+ * (`choice`, one of its choices) or its default vehicle. Without a presence entity the vehicle stands
+ * there always.
  */
-export function parkedVehicle(hass: HomeAssistant, f: Furniture): string | null {
+export function parkedVehicle(hass: HomeAssistant, f: Furniture, choice?: string | null): string | null {
   if (f.type !== "parking") return null;
   const entity = ref(f.entity);
   if (entity) {
     const st = hass.states[entity];
     if (!st || !PRESENT_STATES.has(st.state.toLowerCase())) return null;
   }
-  let vehicle = f.vehicle ?? null;
+  let vehicle = choice && vehicleChoices(f).includes(choice) ? choice : (f.vehicle ?? null);
   const typeEntity = ref(f.type_entity);
   if (typeEntity && f.types?.length) {
     const s = (hass.states[typeEntity]?.state ?? "").trim().toLowerCase();
@@ -39,12 +54,12 @@ export function parkedVehicle(hass: HomeAssistant, f: Furniture): string | null 
   return vehicle && packItem(vehicle) ? vehicle : null;
 }
 
-/** Vehicles standing in the building's parking spots, by spot id. */
-export function parkedVehicles(hass: HomeAssistant, building: Building): Map<string, string> {
+/** Vehicles standing in the building's parking spots, by spot id (`choices`: switched vehicles by spot id). */
+export function parkedVehicles(hass: HomeAssistant, building: Building, choices?: ReadonlyMap<string, string>): Map<string, string> {
   const out = new Map<string, string>();
   for (const floor of building.floors) {
     for (const f of floor.furniture) {
-      const v = parkedVehicle(hass, f);
+      const v = parkedVehicle(hass, f, choices?.get(f.id));
       if (v) out.set(f.id, v);
     }
   }
