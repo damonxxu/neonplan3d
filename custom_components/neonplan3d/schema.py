@@ -257,11 +257,13 @@ FRAME_KINDS = ["calendar", "camera", "media", "person", "photo", "weather", "tod
 
 # one value in an item's pin (pins.ts): a sensor with a short label; hours with a minutes sensor, or minutes as H:MM
 # own words for a pin's states, and a pin moved away from its item
+_PIN_TEXT = vol.Any(None, vol.All(str, vol.Length(max=16)))
 PIN_TEXTS_SCHEMA = vol.Any(
     None,
-    vol.Schema({vol.Optional(k, default=None): vol.Any(None, vol.All(str, vol.Length(max=16))) for k in ("idle", "auto", "done")}),
+    vol.Schema({vol.Optional(k, default=None): _PIN_TEXT for k in ("idle", "auto", "done")}),
 )
-PIN_OFFSET_SCHEMA = vol.Any(None, vol.Schema({vol.Required(k): vol.All(vol.Coerce(float), vol.Range(min=-5, max=5)) for k in ("x", "y", "z")}))
+_PIN_OFFSET_AXIS = vol.All(vol.Coerce(float), vol.Range(min=-5, max=5))
+PIN_OFFSET_SCHEMA = vol.Any(None, vol.Schema({vol.Required(k): _PIN_OFFSET_AXIS for k in ("x", "y", "z")}))
 
 PIN_ITEM_SCHEMA = vol.Schema(
     {

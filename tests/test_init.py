@@ -162,6 +162,8 @@ async def test_opening_fields_get_defaults(hass: HomeAssistant, hass_ws_client) 
         "leaves": 1,
         "swing": "in",
         "cover": None,
+        "curtain": None,
+        "cover_tap": True,
         "contact": None,
         "contact2": None,
         "tilt": None,
