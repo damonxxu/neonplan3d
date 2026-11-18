@@ -1,8 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { binColors, binDue, binGlows, binNext, FinishedMemory, fridgeOpenTooLong, isFinishedState, mailboxBase, mailboxPost, nextFridgeCheck, pickupsOf, plantThirsty, remainingMinutes, remainingText, sensorDays, serviceDue, wasteCalendars, wasteColors, wasteMatches } from "./household.ts";
+import { applianceIdle, applianceOf, binColors, calendarItems, dayEventsOf, binDue, binGlows, binNext, binOut, binOutToggleable, binTagsShown, FinishedMemory, fridgeOpenTooLong, groupTags, householdEntities, isFinishedState, mailboxBase, mailboxPost, nextFridgeCheck, pickupsOf, plantThirsty, remainingMinutes, remainingText, sensorDays, serviceDue, servicesDue, wasteCalendars, wasteColors, wasteMatches, type HouseholdTag } from "./household.ts";
 import type { Furniture } from "./model.ts";
 import type { HassEntity, HomeAssistant } from "./types.ts";
+import { setPacks, type FurniturePack } from "./packs.ts";
+
+test("programme appliances: the built-in ones and the kitchen pack's built-in dishwasher and oven (#973)", () => {
+  assert.equal(applianceOf("washer"), "washer");
+  assert.equal(applianceOf("dishwasher"), "dishwasher");
+  assert.equal(applianceOf("fridge"), null);
+  const item = (id: string) => ({ id, name: { en: id }, size: [0.6, 0.6, 0.8] as [number, number, number], electric: true, parts: [] });
+  const pack: FurniturePack = { id: "k.pack", name: "K", publisher: "K", licensee: null, items: [item("dishwasher_integrated_60"), item("oven_builtin_compact"), item("washbasin_60"), item("microwave_builtin")] };
+  setPacks([pack]);
+  assert.equal(applianceOf("pack:k.pack:dishwasher_integrated_60"), "dishwasher");
+  assert.equal(applianceOf("pack:k.pack:oven_builtin_compact"), "oven");
+  assert.equal(applianceOf("pack:k.pack:washbasin_60"), null);
+  assert.equal(applianceOf("pack:k.pack:microwave_builtin"), null);
+  assert.equal(applianceOf("pack:k.pack:unknown"), null);
+  setPacks([]);
+});
 
 const st = (entity_id: string, state: string, attributes: Record<string, unknown> = {}, last_changed?: string): HassEntity => ({ entity_id, state, attributes, last_changed }) as HassEntity;
 const hassOf = (...states: HassEntity[]): HomeAssistant => ({ states: Object.fromEntries(states.map((s) => [s.entity_id, s])) }) as unknown as HomeAssistant;
@@ -185,4 +201,162 @@ test("the glow hours can be set for the house; a tap on a bin lists its next pic
   const next = binNext({ bin_kind: "paper", bin_source: "calendar.abfall" }, hassOf(), pickups, new Date(2026, 9, 15, 18, 0));
   assert.deepEqual(next.map((p) => p.day.getDate()), [15, 29, 12]);
   assert.deepEqual(binNext({ bin_kind: "paper", bin_source: "sensor.p" }, hassOf(st("sensor.p", "3")), pickups, new Date(2026, 9, 15, 18, 0)).map((p) => p.day.getDate()), [18]);
+});
+
+test("a sensor's free text: the days, not another number in it (D576)", () => {
+  const st = (state: string) => ({ entity_id: "sensor.rest", state, attributes: {} });
+  assert.equal(sensorDays(st("Restabfalltonne 2-wöchentlich in 4 Tagen")), 4);
+  assert.equal(sensorDays(st("in 3 days")), 3);
+  assert.equal(sensorDays(st("Bio: 11 dagen")), 11);
+  assert.equal(sensorDays(st("Tonne 120 l, 5")), 5);
+});
+
+test("a day-first date with dashes and Afvalbeheer's Days_until (#962)", () => {
+  const now = new Date(2026, 10, 6, 9, 0);
+  const st = (state: string, attributes: Record<string, unknown> = {}) => ({ entity_id: "sensor.afval", state, attributes });
+  assert.equal(sensorDays(st("17-11-2026"), now), 11);
+  assert.equal(sensorDays(st("Maandag, 09-11-2026"), now), 3);
+  assert.equal(sensorDays(st("Donderdag, 12-11-2026"), now), 6);
+  // a range of days is no date
+  assert.equal(sensorDays(st("in 2-4 days"), now), 4);
+  assert.equal(sensorDays(st("Maandag, 09-11-2026", { Days_until: 3 }), now), 3);
+  assert.equal(sensorDays(st("whatever", { Days_until: "5" }), now), 5);
+});
+
+test("a sensor's date in its text: Waste Collection Schedule's formats (1.20.1 took the year for the days)", () => {
+  const now = new Date(2026, 9, 19, 9, 0);
+  const st = (state: string) => ({ entity_id: "sensor.bio", state, attributes: {} });
+  assert.equal(sensorDays(st("on Mon, 26.10.2026"), now), 7);
+  assert.equal(sensorDays(st("am Mo, 19.10.2026"), now), 0);
+  assert.equal(sensorDays(st("Biotonne 28.10."), now), 9);
+  assert.equal(sensorDays(st("2026-10-29 (Do)"), now), 10);
+  assert.equal(sensorDays(st("29/10/2026"), now), 10);
+  assert.equal(sensorDays(st("10/29/2026"), now), 10);
+  // a date without a year that has passed this year is next year's
+  assert.equal(sensorDays(st("Weihnachtsbaum 05.01."), now), 78);
+  // numbers that are no date stay as they were
+  assert.equal(sensorDays(st("Restabfalltonne 2-wöchentlich in 4 Tagen"), now), 4);
+});
+
+test("the pickup day across a clock change is the right calendar day (D576)", () => {
+  // Saturday 17 October 2026, the clocks go back on the 25th: 11 days later is Wednesday the 28th
+  const now = new Date(2026, 9, 17, 10, 0);
+  const hass = { states: { "sensor.bio": { entity_id: "sensor.bio", state: "11", attributes: {} } } } as unknown as Parameters<typeof binDue>[1];
+  const due = binDue({ bin_kind: "bio", bin_source: "sensor.bio", bin_match: null }, hass, new Map(), now);
+  assert.equal(due?.day.getDate(), 28);
+  assert.equal(due?.day.getDay(), 3);
+});
+
+const tag = (id: string, x: number, days: number, extra: Partial<HouseholdTag> = {}): HouseholdTag => ({ id, floorId: "eg", x, z: 0, y: 1, r: 0.37, name: id, color: "#888888", when: `${days}`, days, ...extra });
+
+test("bins standing together share one tag, its lines in pickup order; a mailbox and bins far apart keep their own", () => {
+  const groups = groupTags([tag("paper", 0.65, 1), tag("rest", 0, 0), tag("bio", 1.3, 3), tag("far", 5, 0), tag("mail", 0.3, -1, { icon: "mail" }), tag("other floor", 0.65, 2, { floorId: "og" })]);
+  assert.equal(groups.length, 4);
+  const row = groups.find((g) => g.lines.length === 3)!;
+  assert.deepEqual(row.lines.map((l) => l.id), ["rest", "paper", "bio"]);
+  assert.ok(Math.abs(row.x - 0.65) < 1e-9);
+  assert.ok(groups.some((g) => g.lines[0].id === "mail" && g.lines.length === 1));
+  assert.ok(groups.some((g) => g.lines[0].id === "far"));
+  assert.ok(groups.some((g) => g.lines[0].id === "other floor"));
+});
+
+test("tags only for the next pickup and only some days before; by default every bin keeps its tag", () => {
+  const bins = [
+    { id: "rest", days: 0 },
+    { id: "rest2", days: 0 },
+    { id: "paper", days: 1 },
+    { id: "bio", days: 5 },
+  ];
+  assert.deepEqual([...binTagsShown(bins)], ["rest", "rest2", "paper", "bio"]);
+  assert.deepEqual([...binTagsShown(bins, { nextOnly: true })], ["rest", "rest2"]);
+  assert.deepEqual([...binTagsShown(bins, { ahead: 1 })], ["rest", "rest2", "paper"]);
+  assert.deepEqual([...binTagsShown(bins, { ahead: 0, nextOnly: true })], ["rest", "rest2"]);
+  assert.deepEqual([...binTagsShown([{ id: "bio", days: 5 }], { ahead: 2 })], []);
+  assert.deepEqual([...binTagsShown([{ id: "bio", days: 5 }], { nextOnly: true, ahead: null })], ["bio"]);
+});
+
+test("a bin is put out while its helper is on; only a helper or a switch can be tapped", () => {
+  const hass = hassOf(st("input_boolean.rest_out", "on"), st("binary_sensor.paper_out", "off"));
+  assert.ok(binOut({ bin_out: "input_boolean.rest_out" }, hass));
+  assert.ok(!binOut({ bin_out: "binary_sensor.paper_out" }, hass));
+  assert.ok(!binOut({ bin_out: null }, hass));
+  assert.ok(!binOut({ bin_out: "input_boolean.missing" }, hass));
+  assert.ok(binOutToggleable({ bin_out: "switch.x" }) && binOutToggleable({ bin_out: "input_boolean.x" }));
+  assert.ok(!binOutToggleable({ bin_out: "binary_sensor.x" }) && !binOutToggleable({}));
+  assert.deepEqual(householdEntities({ type: "waste_bin", bin_source: "calendar.a", bin_out: "input_boolean.rest_out" } as Furniture), ["calendar.a", "input_boolean.rest_out"]);
+});
+
+test("a robot vacuum's second service (its dock) is due on its own threshold", () => {
+  const hass = hassOf(st("sensor.brush", "40"), st("sensor.dock_bag", "3"), st("binary_sensor.filter", "on"));
+  assert.deepEqual(servicesDue({ service: "sensor.brush", service_min: 10, service2: "sensor.dock_bag", service2_min: 5 }, hass), ["sensor.dock_bag"]);
+  assert.deepEqual(servicesDue({ service: "binary_sensor.filter", service2: "sensor.dock_bag", service2_min: 2 }, hass), ["binary_sensor.filter"]);
+  assert.deepEqual(servicesDue({ service: "binary_sensor.filter", service2: "sensor.dock_bag" }, hass), ["binary_sensor.filter", "sensor.dock_bag"]);
+  // the same entity twice is one line
+  assert.deepEqual(servicesDue({ service: "binary_sensor.filter", service2: "binary_sensor.filter" }, hass), ["binary_sensor.filter"]);
+  assert.deepEqual(servicesDue({}, hass), []);
+});
+
+test("no time left while the appliance is off or idle: a leftover on its display after a power cut", () => {
+  // its plug off, its own state idle, its status sensor ready
+  assert.ok(applianceIdle(st("switch.washer_plug", "off"), null, 10));
+  assert.ok(applianceIdle(st("sensor.dishwasher_status", "Ready", { device_class: "enum" }), null, 10));
+  assert.ok(applianceIdle(st("binary_sensor.washer_running", "off"), 50, 10));
+  // standby power: idle, even while the plug's switch is on
+  assert.ok(applianceIdle(st("switch.washer_plug", "on"), 1.5, 10));
+  assert.ok(applianceIdle(undefined, 0.4, 10));
+  // running: power above the threshold, or a status that tells a program (a soak with little power)
+  assert.ok(!applianceIdle(st("switch.washer_plug", "on"), 1800, 10));
+  assert.ok(!applianceIdle(st("sensor.washer_status", "Running", { device_class: "enum" }), 2, 10));
+  assert.ok(!applianceIdle(st("binary_sensor.washer_running", "on"), 2, 10));
+  // nothing known: not idle (the time left alone tells it runs)
+  assert.ok(!applianceIdle(undefined, null, 10));
+  assert.ok(!applianceIdle(st("switch.washer_plug", "on"), null, 10));
+});
+
+test("pack plants are plants by their name, not only by the palette's leaf colour (#712)", async () => {
+  const { setPacks, packType } = await import("./packs.ts");
+  const { isPackPlant } = await import("./household.ts");
+  const part = (color: string) => ({ shape: "box", x: 0, y: 0, z: 0, w: 0.1, h: 0.1, d: 0.1, color });
+  setPacks([
+    {
+      id: "deco",
+      name: "Deko",
+      items: [
+        { id: "plant_monstera_m", name: { de: "Monstera mittel" }, size: [0.6, 0.6, 1.2], parts: [part("pot"), part("#2f6b4a"), part("#1e4a3a")] },
+        { id: "humidifier", name: { de: "Luftbefeuchter", en: "Humidifier" }, size: [0.3, 0.3, 0.4], parts: [part("white")] },
+        { id: "tv_stand", name: { de: "Fernseher auf Standfuß" }, size: [1, 0.5, 1.5], parts: [part("dark")] },
+      ],
+    } as never,
+  ]);
+  assert.equal(isPackPlant(packType("deco", "plant_monstera_m")), true);
+  assert.equal(isPackPlant(packType("deco", "humidifier")), false);
+  assert.equal(isPackPlant(packType("deco", "tv_stand")), false);
+  setPacks([]);
+});
+
+test("calendar entries in Today in the household (idea: T-Eberle)", () => {
+  const now = new Date(2026, 10, 13, 13, 50);
+  const at = (h: number, m = 0) => ({ dateTime: new Date(2026, 10, 13, h, m).toISOString() });
+  const events = dayEventsOf(
+    [
+      { summary: "Dentist", start: at(14, 30), end: at(15) },
+      { summary: "Breakfast", start: at(8), end: at(9) },
+      { summary: "Grandma's birthday", start: { date: "2026-11-13" }, end: { date: "2026-11-14" } },
+      { summary: "Holiday", start: { date: "2026-11-10" }, end: { date: "2026-11-13" } },
+      { summary: "Yoga", start: at(19), end: at(20) },
+      { summary: "  " },
+    ],
+    "calendar.family",
+  );
+  // all-day first, then by time; ended ones and yesterday's holiday are gone
+  const items = calendarItems(events, now, "de");
+  assert.deepEqual(items.map((i) => i.text), ["Grandma's birthday", "14:30 Dentist", "19:00 Yoga"]);
+  assert.ok(items.every((i) => i.entity === "calendar.family" && i.icon === "calendar-clock"));
+  // starting within the hour: amber
+  assert.equal(items.find((i) => i.text.includes("Dentist"))?.hot, true);
+  assert.equal(items.find((i) => i.text.includes("Yoga"))?.hot, undefined);
+  // the same entry in two calendars is one line; at most max lines
+  const twice = [...events, ...dayEventsOf([{ summary: "Yoga", start: at(19) }], "calendar.other")];
+  assert.equal(calendarItems(twice, now, "de").length, 3);
+  assert.equal(calendarItems(events, now, "de", 2).length, 2);
 });

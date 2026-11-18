@@ -37,6 +37,7 @@ const TEXT = {
     would_none: "Kein Raum, keine Etage im Satz gefunden",
     house: "das ganze Haus",
     close: "Schließen",
+    silent: "Das Mikrofon liefert nur Stille. Meist hält eine andere App es fest – in Fully Kiosk die Bewegungserkennung per Geräusch (Motion Detection → Acoustic Detection) ausschalten und neu laden.",
   },
   en: {
     title: "Microphone probe",
@@ -62,6 +63,7 @@ const TEXT = {
     would_none: "No room or floor found in the sentence",
     house: "the whole house",
     close: "Close",
+    silent: "The microphone gives only silence. Usually another app holds it – in Fully Kiosk switch off the acoustic motion detection (Motion Detection → Acoustic Detection) and reload.",
   },
 };
 
@@ -146,14 +148,19 @@ export class MicProbe extends LitElement {
 
   private async allow(): Promise<void> {
     const t = this.t;
+    // the audio context starts on the tap itself – made after the await it stays mute in Android WebViews (#579)
+    const ctx = audioContext();
+    // closed again before it resumed (the microphone denied): no unhandled rejection (usage reports)
+    ctx.resume().catch(() => undefined);
     try {
       this.stream = await openMicrophone();
     } catch (err) {
+      void ctx.close();
       const name = (err as DOMException)?.name ?? "";
       this.add({ ok: false, text: name === "NotAllowedError" || name === "SecurityError" ? t.mic_denied : name === "NotFoundError" ? t.mic_none : `${t.mic_other}: ${name || String(err)}` });
       return;
     }
-    this.ctx = audioContext();
+    this.ctx = ctx;
     this.source = this.ctx.createMediaStreamSource(this.stream);
     const analyser = this.ctx.createAnalyser();
     analyser.fftSize = 512;
@@ -186,7 +193,8 @@ export class MicProbe extends LitElement {
         ...(text ? [{ ok: !!where, text: where ? `${t.would}: ${where}` : t.would_none }] : []),
       ];
     } catch (err) {
-      this._result = [{ ok: false, text: `Assist: ${String((err as Error)?.message ?? err)}` }];
+      const msg = String((err as Error)?.message ?? err);
+      this._result = [{ ok: false, text: msg === "silent" ? t.silent : `Assist: ${msg}` }];
     }
     this._busy = false;
   }

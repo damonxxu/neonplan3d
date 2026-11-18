@@ -5,13 +5,17 @@
 
 import { Color } from "three";
 import type { Furniture, Vec2 } from "../model.ts";
-import { BOILER_Y, builtinBase, stairsULayout, POOL_VALVE_Y } from "../model.ts";
-import { mountBase, packItem, packMotion, packMovingPart, packScreen, type PackItem, type PackMotion } from "../packs.ts";
+import { BOILER_Y, builtinBase, gangsOf, stairsULayout, POOL_VALVE_Y } from "../model.ts";
+import { adventCandles, isRobotVacuum, mountBase, packItem, packMotion, packMovingPart, packRobotCentre, packRobotPart, packScreen, packSpinAxis, type PackItem, type PackMotion, type PackPart } from "../packs.ts";
+import { fitParts } from "../pack-scale.ts";
+import { hasLiveParts, liveKey, type PartBind } from "../live-parts.ts";
 import { binColors, binShape, householdCountry, mailboxShape, type BinShape, type MailboxShape } from "../household.ts";
 import type { Floor } from "../model.ts";
 import { ALWAYS, DEG, EDGE_TOP, GeoBuffer, LineBuffer, pushLoft, pushLyingCyl, pushPrism, shade } from "./geo.ts";
+import { hexColor, naturalPalette, palette } from "./palette.ts";
+import { finishTargetOf, finishTargets } from "../finishes.ts";
 
-const C = {
+const BASE = palette({
   body: 0x172238,
   bodyTop: 0x1d2b47,
   fabric: 0x1a2644,
@@ -21,6 +25,9 @@ const C = {
   woodTop: 0x202d4b,
   white: 0x1d2946,
   whiteTop: 0x26375e,
+  // door and drawer fronts of pack items (3.5): drawn like "white" until a finish tells them apart (#1177)
+  front: 0x1d2946,
+  frontTop: 0x26375e,
   metal: 0x2a3a60,
   dark: 0x0b111f,
   glass: 0x1c3a52,
@@ -28,7 +35,48 @@ const C = {
   plantTop: 0x1a4540,
   pot: 0x1d2640,
   accent: 0x2b8fb3,
-};
+}, { body: 0xe8e3db, bodyTop: 0xf2efe9, fabric: 0x8e97a5, fabricTop: 0xa4acb9, cushion: 0xb4bbc5, wood: 0xa67a52, woodTop: 0xbd9067, white: 0xedebe7, whiteTop: 0xf8f7f4, front: 0xedebe7, frontTop: 0xf8f7f4, metal: 0x9da3ab, dark: 0x40454d, glass: 0xa9cfe0, plant: 0x4b8a49, plantTop: 0x66a861, pot: 0xcdbfae, accent: 0x2b8fb3 });
+
+/**
+ * A placed item's own finish (finishes.ts) while it is built: its colours stand in for the palette roles, in the
+ * homely styles only (the neon looks colour every item themselves).
+ */
+let finish: Partial<Record<keyof typeof BASE, number>> | null = null;
+const C = new Proxy(BASE, { get: (t, k) => (finish && typeof k === "string" && k in finish ? finish[k as keyof typeof BASE] : Reflect.get(t, k)) }) as typeof BASE;
+
+/**
+ * The role colours a finish gives (tops and cushions a little lighter), null without one or in a neon look. Fronts
+ * and carcass (#1177): "front" parts take the front finish, "white" parts the carcass finish or, without one, the
+ * front finish as before.
+ */
+function finishColors(f: Pick<Furniture, "finish">): Partial<Record<keyof typeof BASE, number>> | null {
+  if (!f.finish || !naturalPalette()) return null;
+  const out: Partial<Record<keyof typeof BASE, number>> = {};
+  const t = finishTargets(f);
+  const wood = finishSafe(hexColor(t.wood));
+  const fabric = finishSafe(hexColor(t.fabric));
+  const front = finishSafe(hexColor(t.front));
+  const white = finishSafe(hexColor(t.white));
+  if (wood !== null) Object.assign(out, { wood, woodTop: shade(wood, 1.12).getHex() });
+  if (fabric !== null) Object.assign(out, { fabric, fabricTop: shade(fabric, 1.12).getHex(), cushion: shade(fabric, 1.28).getHex() });
+  if (front !== null) Object.assign(out, { front, frontTop: shade(front, 1.05).getHex() });
+  if (white !== null) Object.assign(out, { white, whiteTop: shade(white, 1.05).getHex() });
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * A finish colour as the homely styles can show it. They turn the neon palette's dark navy leftovers neutral grey
+ * (theme.ts: blue far over red and green, and dark), and with the shading towards the floor a blue finish fell into
+ * that rule on some faces only – a blue drawer front grey beside its blue side (#1175). A finish that blue gets just
+ * enough green that the rule never takes it, however dark a face is shaded; other colours stay exactly as they are.
+ */
+export function finishSafe(hex: number | null): number | null {
+  if (hex === null) return null;
+  // linear colours, as the shader sees them
+  const c = new Color(hex);
+  if (!(c.b > c.r * 2 && c.b > c.g * 1.5) || c.b >= 0.5) return hex;
+  return new Color(c.r, Math.min(1, (c.b / 1.5) * 1.02), c.b).getHex();
+}
 
 const EDGE_FURN = shade(0x5b7cff, 0.3);
 const EDGE_FAINT = shade(0x5b7cff, 0.17);
@@ -42,6 +90,11 @@ class Builder {
   private readonly tf: Tf;
   /** The transform mirrors (negative determinant): parts not wound by ccw() come out inside out. */
   readonly mirrored: boolean;
+
+  /** The vertex colours drawn so far (a part's own range is lifted for the light looks). */
+  get colors(): number[] {
+    return this.buf.c;
+  }
 
   constructor(buf: GeoBuffer, lines: LineBuffer, tf: Tf) {
     this.buf = buf;
@@ -386,7 +439,12 @@ function shelf(b: Builder, w: number, d: number, h: number): void {
 function kitchen(b: Builder, w: number, d: number, h: number): void {
   const doors = Math.max(1, Math.round(w / 0.6));
   cabinet(b, w, d - 0.02, h - 0.04, doors, h - 0.2);
-  b.box(-w / 2, w / 2, h - 0.04, h, -d / 2, d / 2, C.whiteTop, C.whiteTop, EDGE_FURN);
+  b.box(-w / 2, w / 2, h - 0.04, h, -d / 2, d / 2, worktop(), worktop(), EDGE_FURN);
+}
+
+/** A built-in worktop's slab: light like a front, or the placed item's wood finish (#1175). */
+function worktop(): number {
+  return finish?.woodTop ?? C.whiteTop;
 }
 
 function fridge(b: Builder, w: number, d: number, h: number): void {
@@ -402,12 +460,40 @@ function fridge(b: Builder, w: number, d: number, h: number): void {
 const tone = (hex: string, k: number) => shade(parseInt(hex.slice(1), 16), k).getHex();
 
 /**
+ * The blueprint and day looks keep only bright, strong colours and turn the rest into their own tones: waste bins
+ * are drawn in their full colour there, or a brown or blue bin turns blue or grey like any cupboard (#609).
+ */
+let lightLook = false;
+export function setLightLook(on: boolean): void {
+  lightLook = on;
+}
+
+/** Vertex colours from `from` on: saturated ones darkened by the shading are lifted back to a kept brightness. */
+export function keepBright(c: number[], from: number): void {
+  for (let i = from; i + 2 < c.length; i += 3) {
+    const mx = Math.max(c[i], c[i + 1], c[i + 2]);
+    const mn = Math.min(c[i], c[i + 1], c[i + 2]);
+    // wheels and dark parts stay dark; grey and white parts follow the look
+    if (mx < 0.1 || (mx - mn) / mx < 0.45 || mx >= 0.62) continue;
+    const k = 0.62 / mx;
+    c[i] *= k;
+    c[i + 1] *= k;
+    c[i + 2] *= k;
+  }
+}
+
+/**
  * A waste bin in its shape and colours (household.ts): wheelie bins taper to the bottom and have their wheels and
  * handle at the back (-z), a 1100 l container stands on four castors, a sack is tied at the top.
  */
 function wasteBin(b: Builder, w: number, d: number, h: number, shape: BinShape, colors: [string, string]): void {
-  const body = tone(colors[0], 0.55);
-  const lid = tone(colors[1], 0.8);
+  // in the light looks at least as bright as the looks keep a colour (a dark brown or green bin too)
+  const full = (hex: string) => {
+    const mx = Math.max(...new Color(hex).toArray());
+    return tone(hex, mx > 0.05 ? Math.max(1, 0.62 / mx) : 1);
+  };
+  const body = lightLook ? full(colors[0]) : tone(colors[0], 0.55);
+  const lid = lightLook ? full(colors[1]) : tone(colors[1], 0.8);
   const lidTop = tone(colors[1], 1);
   if (shape === "bag") {
     // a full sack: wider in the middle, gathered and tied at the top
@@ -457,6 +543,72 @@ function wasteBin(b: Builder, w: number, d: number, h: number, shape: BinShape, 
     b.seg(-w / 2, h + 0.002, (back + d / 2) / 2, w / 2, h + 0.002, (back + d / 2) / 2, EDGE_GLOW);
     b.seg(0, h * 0.25, d / 2 - 0.01, 0, h - 0.06, d / 2 - 0.01, EDGE_FAINT);
   }
+}
+
+/**
+ * Wall switch or socket: a flat frame with one rocker or socket per gang (front at +z, the back on the wall);
+ * "outdoor" a grey box with a lid over each socket.
+ */
+function wallPlate(b: Builder, w: number, d: number, h: number, n: number, socket: boolean, outdoor: boolean): void {
+  const gw = w / n;
+  b.box(-w / 2, w / 2, 0, h, -d / 2, d / 2, outdoor ? C.metal : C.white, outdoor ? C.metal : C.whiteTop, EDGE_FURN);
+  for (let i = 0; i < n; i++) {
+    const cx = -w / 2 + gw * (i + 0.5);
+    if (i) b.seg(-w / 2 + gw * i, h * 0.06, d / 2 + 0.001, -w / 2 + gw * i, h * 0.94, d / 2 + 0.001, EDGE_FAINT);
+    if (!socket) {
+      // the rocker with its seam
+      b.box(cx - gw * 0.34, cx + gw * 0.34, h * 0.16, h * 0.84, d / 2, d / 2 + 0.006, C.white, C.whiteTop, EDGE_FAINT);
+      b.seg(cx - gw * 0.3, h * 0.5, d / 2 + 0.007, cx + gw * 0.3, h * 0.5, d / 2 + 0.007, EDGE_FAINT);
+    } else if (outdoor) {
+      // the hinged lid over the socket
+      b.box(cx - gw * 0.4, cx + gw * 0.4, h * 0.12, h * 0.9, d / 2, d / 2 + 0.018, C.metal, C.metal, EDGE_FAINT);
+      b.seg(cx - gw * 0.36, h * 0.86, d / 2 + 0.019, cx + gw * 0.36, h * 0.86, d / 2 + 0.019, EDGE_FAINT);
+    } else {
+      // the round recess with its two holes
+      const r = Math.min(gw, h) * 0.34;
+      b.lyingCyl("z", cx, d / 2 + 0.002, h / 2 - r, h / 2 + r, 0.004, r * 2, C.dark, C.dark, 14, EDGE_FAINT);
+      b.seg(cx - r * 0.45, h / 2, d / 2 + 0.0045, cx - r * 0.45 + 0.004, h / 2, d / 2 + 0.0045, EDGE_FURN);
+      b.seg(cx + r * 0.45 - 0.004, h / 2, d / 2 + 0.0045, cx + r * 0.45, h / 2, d / 2 + 0.0045, EDGE_FURN);
+    }
+  }
+}
+
+/** Wi-Fi access point: a flat disc under the ceiling (its LED ring below) or a square plate on the wall (ring in front). */
+function wifiAp(b: Builder, w: number, d: number, h: number, wall: boolean): void {
+  if (wall) {
+    b.box(-w / 2, w / 2, 0, h, -d / 2, d / 2, C.white, C.whiteTop, EDGE_FURN);
+    const r = Math.min(w, h) * 0.3;
+    for (let i = 0; i < 20; i++) {
+      const a0 = (i / 20) * Math.PI * 2;
+      const a1 = ((i + 1) / 20) * Math.PI * 2;
+      b.seg(Math.cos(a0) * r, h / 2 + Math.sin(a0) * r, d / 2 + 0.002, Math.cos(a1) * r, h / 2 + Math.sin(a1) * r, d / 2 + 0.002, EDGE_FAINT);
+    }
+    return;
+  }
+  const r = Math.min(w, d) / 2;
+  b.cyl(0, 0, r, 0, h, C.white, C.whiteTop, 24, EDGE_FURN);
+  // the mounting plate on the ceiling
+  b.cyl(0, 0, r * 0.5, h, h + 0.01, C.metal, C.metal, 12);
+}
+
+/** Water heater: a standing tank with its pipes below, or a slim flat tank on the wall (like an Ariston Velis). */
+function waterHeater(b: Builder, w: number, d: number, h: number, wall: boolean): void {
+  if (wall) {
+    b.pad(-w / 2, w / 2, 0, h, -d / 2, d / 2, C.white, C.whiteTop, 0.05, EDGE_FURN);
+    // the display near the top and the two pipes underneath
+    b.box(-w * 0.18, w * 0.18, h * 0.8, h * 0.88, d / 2, d / 2 + 0.006, C.dark);
+    for (const x of [-w * 0.2, w * 0.2]) b.cyl(x, 0, 0.012, -0.12, 0, C.metal, C.metal, 6);
+    return;
+  }
+  const r = Math.min(w, d) / 2;
+  b.cyl(0, 0, r, 0.04, h - 0.05, C.white, C.whiteTop, 20, EDGE_FURN);
+  // a domed top, the feet and the controls in front
+  b.cyl(0, 0, r * 0.85, h - 0.05, h, C.white, C.whiteTop, 20);
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI * 2;
+    b.cyl(Math.cos(a) * r * 0.7, Math.sin(a) * r * 0.7, 0.03, 0, 0.04, C.dark, C.dark, 6);
+  }
+  b.box(-r * 0.3, r * 0.3, h * 0.55, h * 0.65, r - 0.01, r + 0.01, C.dark);
 }
 
 /** A mailbox in its local shape. */
@@ -1045,7 +1197,7 @@ function island(b: Builder, w: number, d: number, h: number): void {
   b.box(-w / 2 + 0.07, w / 2 - 0.07, 0, 0.08, -d / 2 + 0.04, -d / 2 + inner - 0.04, C.dark);
   fronts(b, -w / 2 + 0.05, w / 2 - 0.05, 0.08, h - 0.04, -d / 2 + inner, Math.max(2, Math.round(w / 0.6)), h - 0.2);
   // worktop overhangs on the front for bar stools
-  b.box(-w / 2, w / 2, h - 0.04, h, -d / 2, d / 2, C.whiteTop, C.whiteTop, EDGE_FURN);
+  b.box(-w / 2, w / 2, h - 0.04, h, -d / 2, d / 2, worktop(), worktop(), EDGE_FURN);
 }
 
 function dishwasher(b: Builder, w: number, d: number, h: number): void {
@@ -1105,6 +1257,13 @@ function tvWall(b: Builder, w: number, d: number, h: number): void {
   const y0 = 1.3 - h / 2;
   b.box(-0.12, 0.12, y0 + h * 0.3, y0 + h * 0.7, -d / 2, -d / 2 + 0.03, C.metal);
   b.box(-w / 2, w / 2, y0, y0 + h, -d / 2 + 0.03, d / 2, C.dark, C.dark, EDGE_GLOW);
+}
+
+/** Neon sign: a dark acrylic plate on four little spacers; its text is a picture on the plate (see screenRect). */
+function neonSign(b: Builder, w: number, d: number, h: number): void {
+  for (const x of [-w / 2 + 0.04, w / 2 - 0.04])
+    for (const y of [0.04, h - 0.04]) b.box(x - 0.008, x + 0.008, y - 0.008, y + 0.008, -d / 2, -d / 2 + 0.02, C.metal);
+  b.box(-w / 2, w / 2, 0, h, -d / 2 + 0.02, d / 2, C.dark, C.dark, EDGE_FAINT);
 }
 
 /** Radiator on the wall (back at -z): panel with vertical fins, standing on short brackets. */
@@ -1335,6 +1494,17 @@ export const RADIATOR_Y = 0.12;
 export const AC_Y = 2.05;
 
 /**
+ * The size of a picture (cover, app icon) on a screen of sw × sh metres: the whole picture visible ("contain"),
+ * with a dark margin that grows with the screen – 4 cm on a TV, a few millimetres on a small smart display
+ * (a fixed 4 cm left only a sliver on a 5″ display, #799).
+ */
+export function screenPictureSize(sw: number, sh: number, aspect: number): { w: number; h: number } {
+  const m = Math.min(0.04, 0.08 * Math.min(sw, sh));
+  const w = Math.min(sw - m, (sh - m) * aspect);
+  return { w, h: w / aspect };
+}
+
+/**
  * Screen of a TV or monitor in local coordinates (x across, y up, z = its front face), for the glow
  * shown while the linked device is on. Null for furniture without a screen.
  */
@@ -1383,6 +1553,10 @@ function builtInScreen(f: Furniture, w: number, d: number, h: number, floor?: Fl
     const y0 = 1.3 - h / 2;
     return { x0: -w / 2 + 0.02, x1: w / 2 - 0.02, y0: y0 + 0.02, y1: y0 + h - 0.02, z: d / 2 + 0.003 };
   }
+  if (f.type === "neon_sign") {
+    const y0 = builtinBase(f);
+    return { x0: -w / 2 + 0.01, x1: w / 2 - 0.01, y0: y0 + 0.01, y1: y0 + h - 0.01, z: d / 2 + 0.002 };
+  }
   if (f.type === "desk") return { x0: -0.28, x1: 0.28, y0: h + 0.1, y1: h + 0.4, z: -d / 2 + 0.115 };
   if (f.type === "fridge_smart") {
     // the screen sits on the right door (mirrored: the door's u runs to the left from its hinge at +w/2)
@@ -1402,12 +1576,43 @@ function builtInScreen(f: Furniture, w: number, d: number, h: number, floor?: Fl
   return null;
 }
 
-/** Soft contact shadow under an item: a dark core that fades out beyond its footprint. */
-function contactShadow(shadow: GeoBuffer, tf: Tf, w: number, d: number, strength: number): void {
+/** Round things cast a round shadow: a round table, a plant, a pack item whose largest part is an upright cylinder (#719). */
+export function roundFootprint(f: Pick<Furniture, "type">): boolean {
+  if (f.type === "table_round" || f.type === "plant") return true;
+  const item = packItem(f.type);
+  if (!item?.parts.length) return false;
+  const big = item.parts.reduce((m, p) => (p.w * p.d > m.w * m.d ? p : m), item.parts[0]);
+  return big.shape === "cyl" && (big.axis ?? "y") === "y" && big.w >= 0.85 && big.d >= 0.85;
+}
+
+/**
+ * Soft contact shadow under an item: a dark core that fades out beyond its footprint – round under round things.
+ * `y`: the ground it lies on (an item in the garden stands lower than the floor, #708).
+ */
+function contactShadow(shadow: GeoBuffer, tf: Tf, w: number, d: number, strength: number, round = false, ground = 0): void {
   const grow = Math.min(0.14, Math.max(0.06, Math.min(w, d) * 0.15));
   const dark = new Color(1 - strength, 1 - strength, 1 - strength);
   const clear = new Color(1, 1, 1);
-  const y = 0.003;
+  const y = ground + 0.003;
+  if (round) {
+    const P = (p: Vec2) => [p[0], y, p[1]];
+    const n = 24;
+    const at = (i: number, rx: number, rz: number) => tf(Math.cos((i / n) * 2 * Math.PI) * rx, Math.sin((i / n) * 2 * Math.PI) * rz);
+    const s0 = shadow.p.length;
+    const c = P(tf(0, 0));
+    for (let i = 0; i < n; i++) {
+      const a0 = P(at(i, w / 2, d / 2));
+      const a1 = P(at(i + 1, w / 2, d / 2));
+      const o0 = P(at(i, w / 2 + grow, d / 2 + grow));
+      const o1 = P(at(i + 1, w / 2 + grow, d / 2 + grow));
+      // the same turn as the square shadow's triangles
+      shadow.tri(c, a0, a1, dark);
+      shadow.tri(a0, o0, o1, dark, clear, clear);
+      shadow.tri(a0, o1, a1, dark, clear, dark);
+    }
+    if (tfMirrors(tf)) flipWinding(shadow, s0);
+    return;
+  }
   const inner = [tf(-w / 2, -d / 2), tf(w / 2, -d / 2), tf(w / 2, d / 2), tf(-w / 2, d / 2)];
   const outer = [tf(-w / 2 - grow, -d / 2 - grow), tf(w / 2 + grow, -d / 2 - grow), tf(w / 2 + grow, d / 2 + grow), tf(-w / 2 - grow, d / 2 + grow)];
   const P = (p: Vec2) => [p[0], y, p[1]];
@@ -1422,10 +1627,11 @@ function contactShadow(shadow: GeoBuffer, tf: Tf, w: number, d: number, strength
   if (tfMirrors(tf)) flipWinding(shadow, s0);
 }
 
-export function pushFurniture(buf: GeoBuffer, lines: LineBuffer, shadow: GeoBuffer, f: Furniture, base = 0): void {
+/** `still`: a picture of the item (a preview), so a pack's robot vacuum keeps its robot instead of driving it (#645). */
+export function pushFurniture(buf: GeoBuffer, lines: LineBuffer, shadow: GeoBuffer, f: Furniture, base = 0, still = false): void {
   // a mirrored item needs no rewinding here: boxes, lofts and upright cylinders wind themselves (ccw),
   // lying cylinders and the contact shadow rewind themselves when the transform mirrors (#159)
-  pushUpright(buf, lines, shadow, f, base);
+  pushUpright(buf, lines, shadow, f, base, still);
 }
 
 /** Swap the second and third vertex of every triangle from `from` on (positions, colours, folds, uvs, tiles). */
@@ -1450,20 +1656,33 @@ export function flipWinding(buf: GeoBuffer, from: number): void {
   }
 }
 
-function pushUpright(buf: GeoBuffer, lines: LineBuffer, shadow: GeoBuffer, f: Furniture, base: number): void {
+function pushUpright(buf: GeoBuffer, lines: LineBuffer, shadow: GeoBuffer, f: Furniture, base: number, still = false): void {
   // pack items place their parts at `base` themselves; built-in models are drawn on the floor and
   // lifted as a whole (a dryer on the washer, a shelf on the wall), without a shadow on the floor
   // the mount height is absolute: a wall cabinet drawn at 1.45 m moves by the difference (up or down)
   const lift = packItem(f.type) ? 0 : base - builtinBase(f);
-  if (packItem(f.type) || Math.abs(lift) < 0.001) return buildFurniture(buf, lines, shadow, f, base);
+  if (packItem(f.type) || Math.abs(lift) < 0.001) return buildFurniture(buf, lines, shadow, f, base, still);
   const p0 = buf.p.length;
   const l0 = lines.p.length;
+  const s0 = shadow.p.length;
   buildFurniture(buf, lines, base < 0.05 ? shadow : new GeoBuffer(), f, 0);
   for (let i = p0 + 1; i < buf.p.length; i += 3) buf.p[i] += lift;
   for (let i = l0 + 1; i < lines.p.length; i += 3) lines.p[i] += lift;
+  // in the garden the item stands lower than the floor: its shadow goes down with it
+  if (base < 0) for (let i = s0 + 1; i < shadow.p.length; i += 3) shadow.p[i] += lift;
 }
 
-function buildFurniture(buf: GeoBuffer, lines: LineBuffer, shadow: GeoBuffer, f: Furniture, base: number): void {
+function buildFurniture(buf: GeoBuffer, lines: LineBuffer, shadow: GeoBuffer, f: Furniture, base: number, still = false): void {
+  const before = finish;
+  finish = finishColors(f);
+  try {
+    buildModel(buf, lines, shadow, f, base, still);
+  } finally {
+    finish = before;
+  }
+}
+
+function buildModel(buf: GeoBuffer, lines: LineBuffer, shadow: GeoBuffer, f: Furniture, base: number, still = false): void {
   const a = f.rotation * DEG;
   const c = Math.cos(a);
   const s = Math.sin(a);
@@ -1518,9 +1737,14 @@ function buildFurniture(buf: GeoBuffer, lines: LineBuffer, shadow: GeoBuffer, f:
     case "fridge_smart":
       fridgeSmart(b, w, d, h);
       break;
-    case "waste_bin":
+    case "waste_bin": {
+      const c0 = buf.c.length;
       wasteBin(b, w, d, h, binShape(f), binColors(f, householdCountry()));
+      // the light looks keep only bright saturated colours: the shading towards the floor made the lower half of a
+      // bin fall back to the look's grey (#609), so its coloured parts keep their brightness all the way down
+      if (lightLook) keepBright(buf.c, c0);
       break;
+    }
     case "mailbox": {
       // like the other built-in wall models it is drawn at its own height (a wall mailbox at 1 m, a bank at 0.75 m)
       const p0 = buf.p.length;
@@ -1531,6 +1755,25 @@ function buildFurniture(buf: GeoBuffer, lines: LineBuffer, shadow: GeoBuffer, f:
       for (let i = l0 + 1; i < lines.p.length; i += 3) lines.p[i] += lift;
       if (lift > 0) return; // hangs on the wall: no shadow on the floor
       break;
+    }
+    case "wifi_ap":
+      // under the ceiling or on the wall: lifted by its mount height, no shadow
+      wifiAp(b, w, d, h, f.variant === "wall");
+      return;
+    case "water_heater":
+      waterHeater(b, w, d, h, f.variant === "wall");
+      if (f.variant === "wall") return;
+      break;
+    case "wall_switch":
+    case "wall_socket": {
+      // drawn at its own height like the other built-in wall models; never a shadow on the floor
+      const p0 = buf.p.length;
+      const l0 = lines.p.length;
+      wallPlate(b, w, d, h, gangsOf(f).length, f.type === "wall_socket", f.variant === "outdoor");
+      const lift = builtinBase(f);
+      for (let i = p0 + 1; i < buf.p.length; i += 3) buf.p[i] += lift;
+      for (let i = l0 + 1; i < lines.p.length; i += 3) lines.p[i] += lift;
+      return;
     }
     case "awning":
       // drawn with its moving fabric and arms by pushAwning (it runs in and out with its cover)
@@ -1608,7 +1851,7 @@ function buildFurniture(buf: GeoBuffer, lines: LineBuffer, shadow: GeoBuffer, f:
       break;
     case "worktop":
       // only the 4 cm top at its height, nothing below it (no contact shadow)
-      b.box(-w / 2, w / 2, Math.max(0, h - 0.04), h, -d / 2, d / 2, C.whiteTop, C.whiteTop, EDGE_FURN);
+      b.box(-w / 2, w / 2, Math.max(0, h - 0.04), h, -d / 2, d / 2, worktop(), worktop(), EDGE_FURN);
       return;
     case "dishwasher":
       dishwasher(b, w, d, h);
@@ -1631,6 +1874,16 @@ function buildFurniture(buf: GeoBuffer, lines: LineBuffer, shadow: GeoBuffer, f:
     case "tv_wall":
       tvWall(b, w, d, h);
       return;
+    case "neon_sign": {
+      // hangs on the wall at its own height: no shadow on the floor
+      const p0 = buf.p.length;
+      const l0 = lines.p.length;
+      neonSign(b, w, d, h);
+      const lift = builtinBase(f);
+      for (let i = p0 + 1; i < buf.p.length; i += 3) buf.p[i] += lift;
+      for (let i = l0 + 1; i < lines.p.length; i += 3) lines.p[i] += lift;
+      return;
+    }
     case "parking": {
       // only the marking of the spot: a vehicle standing in it is added by the viewer
       const y = 0.012;
@@ -1689,16 +1942,33 @@ function buildFurniture(buf: GeoBuffer, lines: LineBuffer, shadow: GeoBuffer, f:
     default: {
       const item = packItem(f.type);
       if (item) {
-        // a motorised curtain's fabric or a roll-down screen's cloth is drawn with its cover's state (pushPackMotion)
+        // a motorised curtain's fabric or a roll-down screen's cloth is drawn with its cover's state (pushPackMotion);
+        // a pack's robot vacuum drives around as the viewer's robot (pushPackRobot), only its dock stays here (#645)
         const motion = packMotion(f.type);
-        packModel(b, item, w, d, h, base, null, null, motion ? (p) => packMovingPart(motion, p) : null);
+        const own = motion ? (p: PackPart) => packMovingPart(motion, p) : isRobotVacuum(f.type) && !still ? packRobotPart : null;
+        // turning fan blades are a model of their own the viewer turns (pushPackSpin, #1084); a picture keeps them
+        // live parts (3.4) are models of their own too, moved by the viewer (pushPackLive); a picture keeps them
+        const live = !still && hasLiveParts(item);
+        const skip = !still && (packSpinAxis(item) || live) ? (p: PackPart) => !!p.spin || !!p.bind || !!own?.(p) : own;
+        packModel(b, item, w, d, h, base, null, null, skip);
         // items on furniture, walls or ceilings cast no shadow on the floor
         if (base > 0.05) return;
       } else b.box(-w / 2, w / 2, 0, h, -d / 2, d / 2, C.body, C.bodyTop, EDGE_FURN);
     }
   }
-  contactShadow(shadow, tf, w, d, f.type === "plant" ? 0.35 : 0.5);
+  contactShadow(shadow, tf, w, d, f.type === "plant" ? 0.35 : 0.5, roundFootprint(f), Math.min(0, base));
 }
+
+/**
+ * A pack item with parts in a colour of their own ("#rrggbb", a pumpkin's orange): the light looks keep such colours
+ * only while bright and strong enough, so these parts are drawn anew on a look change (#609).
+ */
+export function hasFixedColors(type: string): boolean {
+  return !!packItem(type)?.parts.some((p) => p.color?.startsWith("#") || p.top?.startsWith("#"));
+}
+
+/** The dark top the packs give their worktops (kitchen units, vanities): a placed item's wood finish replaces it. */
+const WORKTOP_TOP = "#1d2640";
 
 /** Colour of a pack part: a palette role (so packs follow the look) or "#rrggbb". */
 function packColor(value: string | undefined, top: boolean): number | null {
@@ -1721,17 +1991,28 @@ function packModel(
   skip: ((p: PackItem["parts"][number]) => boolean) | null = null,
 ): void {
   const onlyGlow = !!only;
-  for (const q of item.parts) {
+  const advent = item.parts.some((p) => p.advent) ? adventCandles() : 4;
+  for (const q of fitParts(item, w, d, h)) {
     if (skip?.(q)) continue;
+    // an Advent candle's flame burns only from its Sunday on
+    if (q.advent && q.advent > advent) continue;
     // only some parts (the glowing ones of a speaker, a car's windows), a hair larger so they cover the item's own
     if (only && !only(q)) continue;
     const p = onlyGlow ? { ...q, glow: true, w: q.w + 0.006 / w, d: q.d + 0.006 / d, y: Math.max(0, q.y - 0.002 / h), h: q.h + 0.004 / h } : q;
     const lit = p.glow && glow !== null;
-    const side = lit ? glow : (packColor(p.color, false) ?? C.body);
+    // a part in a colour of its own that follows a finish (a gaming chair's red cover, a table's oak top, #1175) takes
+    // the placed item's colour for that finish; without one it keeps its own
+    const own = p.finish ? finishTargetOf(p.finish) : null;
+    const ownSide = own ? finish?.[own] : undefined;
+    const side = lit ? glow : (ownSide ?? packColor(p.color, false) ?? C.body);
+    // a worktop (a wood part with the packs' dark worktop colour on top) takes a wood finish on its top as well, not
+    // only on its front edge (#1143); without a finish it keeps its own top
+    const finishedTop = ownSide !== undefined || (p.top === WORKTOP_TOP && finish?.[`${p.color}Top` as keyof typeof BASE] !== undefined);
     // without a top colour, the top is the role's top shade or a little lighter
-    const top = lit ? glow : (packColor(p.top, false) ?? packColor(p.color, true) ?? shade(side, 1.25).getHex());
+    const top = lit ? glow : ownSide !== undefined ? (finish?.[`${own}Top` as keyof typeof BASE] ?? ownSide) : ((finishedTop ? null : packColor(p.top, false)) ?? packColor(p.color, true) ?? shade(side, 1.25).getHex());
     const y0 = base + p.y * h;
     const y1 = base + Math.min(h, (p.y + p.h) * h);
+    const c0 = b.colors.length;
     // "glow" lines are as bright as the wall lines, so a pack item can be drawn like the walls
     const edges = p.edges === "glow" ? EDGE_TOP : p.edges === "faint" ? EDGE_FAINT : p.edges ? EDGE_FURN : null;
     // a turned part draws through a builder whose coordinates turn around the part's centre
@@ -1746,6 +2027,10 @@ function packModel(
       const td = p.td ?? p.d;
       bb.loft([(p.x - p.w / 2) * w, (p.x + p.w / 2) * w, (p.z - p.d / 2) * d, (p.z + p.d / 2) * d], [(tx - tw / 2) * w, (tx + tw / 2) * w, (tz - td / 2) * d, (tz + td / 2) * d], y0, y1, side, top, edges);
     } else bb.box((p.x - p.w / 2) * w, (p.x + p.w / 2) * w, y0, y1, (p.z - p.d / 2) * d, (p.z + p.d / 2) * d, side, top, edges);
+    // a part in a colour of its own keeps it in the light looks down to the ground, like a waste bin (#609): the
+    // shading towards the floor would push its lower half under the looks' signal-colour threshold (palette roles
+    // follow the look and stay as they are)
+    if (lightLook && !lit && !onlyGlow && ownSide === undefined && (p.color?.startsWith("#") || (p.top?.startsWith("#") && !finishedTop))) keepBright(b.colors, c0);
   }
 }
 
@@ -1775,6 +2060,26 @@ export function pushCameraModel(buf: GeoBuffer, model: "camera_wall" | "camera_c
   b.loft([-0.035, 0.035, -0.03, 0.09], [-0.04, 0.04, -0.03, 0.09], y + 0.02, y + 0.09, body, bodyTop);
   b.lyingCyl("z", 0, 0.1, y + 0.03, y + 0.08, 0.03, 0.05, lens, C.accent, 10);
   b.box(-0.006, 0.006, y + 0.075, y + 0.085, 0.085, 0.09, 0xff3b4f, 0xff3b4f);
+}
+
+/**
+ * The robot of a pack's robot vacuum (the parts in front of its dock) as a model of its own, centred on the robot
+ * and standing on y = 0, facing +z – the viewer drives it around (#645). Returns the robot's radius and height, for
+ * the status light on top.
+ */
+export function pushPackRobot(buf: GeoBuffer, item: PackItem, w: number, d: number, h: number): { radius: number; top: number } {
+  const cz = packRobotCentre(item) * d;
+  const b = new Builder(buf, new LineBuffer(), (x, z) => [x, z - cz]);
+  packModel(b, item, Math.max(0.05, w), Math.max(0.05, d), Math.max(0.005, h), 0, null, packRobotPart);
+  let radius = 0;
+  let top = 0;
+  for (const p of fitParts(item, w, d, h)) {
+    if (!packRobotPart(p)) continue;
+    const r = Math.min(p.w * w, p.d * d) / 2;
+    if (p.shape === "cyl" && r > radius) radius = r;
+    top = Math.max(top, Math.min(h, (p.y + p.h) * h));
+  }
+  return { radius: radius || 0.17, top: top || 0.09 };
 }
 
 /** The glowing parts of a pack item that is no lamp (a smart speaker's light ring) in `color`: for the screen layer. */
@@ -1825,13 +2130,148 @@ export function packMotionParts(item: PackItem, kind: PackMotion, open: number, 
 }
 
 /** A pack lamp into the lamp buffer: glowing parts in the light's colour (`glow`), or dark when off. */
-export function pushPackLamp(buf: GeoBuffer, item: PackItem, f: Pick<Furniture, "x" | "z" | "rotation" | "w" | "d" | "h" | "mirror">, base: number, glow: number): void {
+/**
+ * Where a pack lamp's light comes from (#680): the centre of its glowing parts – each weighed by its size, so the
+ * glass of a lantern counts more than a small indicator – turned and mirrored like the item, as plan x and z and the
+ * height y. Null for an item without glowing parts.
+ */
+export function packGlowCentre(item: PackItem, f: Pick<Furniture, "x" | "z" | "rotation" | "w" | "d" | "h" | "mirror">, base: number): [number, number, number] | null {
+  const w = Math.max(0.05, f.w);
+  const d = Math.max(0.05, f.d);
+  const h = Math.max(0.005, f.h);
+  let weight = 0;
+  let sx = 0;
+  let sy = 0;
+  let sz = 0;
+  for (const p of fitParts(item, w, d, h)) {
+    if (!p.glow) continue;
+    // a loft's centre lies between its bottom and its top rectangle; a turned part turns around its own centre
+    const x = ((p.x + (p.shape === "loft" ? (p.tx ?? p.x) : p.x)) / 2) * w;
+    const z = ((p.z + (p.shape === "loft" ? (p.tz ?? p.z) : p.z)) / 2) * d;
+    const y0 = p.y * h;
+    const y1 = Math.min(h, (p.y + p.h) * h);
+    const k = Math.max(1e-6, p.w * w * p.d * d * Math.max(0, y1 - y0));
+    weight += k;
+    sx += x * k;
+    sy += ((y0 + y1) / 2) * k;
+    sz += z * k;
+  }
+  if (!weight) return null;
+  const x = sx / weight;
+  const z = sz / weight;
+  const a = f.rotation * DEG;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  const mx = f.mirror ? -1 : 1;
+  return [f.x + mx * x * c - z * s, base + sy / weight, f.z + mx * x * s + z * c];
+}
+
+/**
+ * Every glowing part of a pack lamp as a point of its own (a track with three spots, a chandelier's candles): the
+ * light and the cones come from each of them, not from their middle (#1034). Parts that touch each other (a shade
+ * built from several pieces) count as one.
+ */
+export function packGlowCentres(item: PackItem, f: Pick<Furniture, "x" | "z" | "rotation" | "w" | "d" | "h" | "mirror">, base: number): [number, number, number][] {
+  const w = Math.max(0.05, f.w);
+  const d = Math.max(0.05, f.d);
+  const h = Math.max(0.005, f.h);
+  const pts: { x: number; y: number; z: number; r: number }[] = [];
+  for (const p of fitParts(item, w, d, h)) {
+    if (!p.glow) continue;
+    const x = ((p.x + (p.shape === "loft" ? (p.tx ?? p.x) : p.x)) / 2) * w;
+    const z = ((p.z + (p.shape === "loft" ? (p.tz ?? p.z) : p.z)) / 2) * d;
+    const y0 = p.y * h;
+    const y1 = Math.min(h, (p.y + p.h) * h);
+    const r = Math.max(p.w * w, p.d * d) / 2;
+    const near = pts.find((q) => Math.hypot(q.x - x, q.z - z) < q.r + r + 0.01);
+    if (near) continue;
+    pts.push({ x, y: (y0 + y1) / 2, z, r });
+  }
+  const a = f.rotation * DEG;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  const mx = f.mirror ? -1 : 1;
+  return pts.map((p) => [f.x + mx * p.x * c - p.z * s, base + p.y, f.z + mx * p.x * s + p.z * c]);
+}
+
+export function pushPackLamp(buf: GeoBuffer, item: PackItem, f: Pick<Furniture, "x" | "z" | "rotation" | "w" | "d" | "h" | "mirror" | "finish">, base: number, glow: number, still = false): void {
   const a = f.rotation * DEG;
   const c = Math.cos(a);
   const s = Math.sin(a);
   // mirrored: the item's own x runs the other way (the builder rewinds what needs it)
   const mx = f.mirror ? -1 : 1;
   const tf: Tf = (x, z) => [f.x + mx * x * c - z * s, f.z + mx * x * s + z * c];
-  // lamps have no outlines: their edges are dropped
-  packModel(new Builder(buf, new LineBuffer(), tf), item, Math.max(0.05, f.w), Math.max(0.05, f.d), Math.max(0.005, f.h), base, glow);
+  // lamps have no outlines: their edges are dropped; a ceiling fan's turning blades are drawn by pushPackSpin
+  const skip = !still && (packSpinAxis(item) || hasLiveParts(item)) ? (p: PackPart) => !!p.spin || !!p.bind : null;
+  // the lamp's body takes the placed item's finish like any furniture (#1175); its glowing parts keep the light's colour
+  const before = finish;
+  finish = finishColors(f);
+  try {
+    packModel(new Builder(buf, new LineBuffer(), tf), item, Math.max(0.05, f.w), Math.max(0.05, f.d), Math.max(0.005, f.h), base, glow, null, skip);
+  } finally {
+    finish = before;
+  }
+}
+
+/**
+ * One group of live parts of a pack item (same slot and kind, 3.4) as a model of its own around its pivot, in the
+ * item's own coordinates (not turned, not mirrored, standing on y = 0): a door about its hinge edge at the front, a
+ * drawer or a status light about its middle, a filling tank from its bottom. Status lights and glowing parts are
+ * drawn white: the viewer tints them. Null when the item has no such parts. A placed item's finish colours its doors
+ * and fronts like the rest of it; their edges go to `lines`.
+ */
+export function pushPackLive(buf: GeoBuffer, item: PackItem, w: number, d: number, h: number, key: string, placed: Pick<Furniture, "finish"> = {}, lines: LineBuffer = new LineBuffer()): { pivot: [number, number, number]; bind: PartBind; depth: number; rest: number } | null {
+  const W = Math.max(0.05, w);
+  const D = Math.max(0.05, d);
+  const H = Math.max(0.005, h);
+  const parts = fitParts(item, W, D, H).filter((p) => p.bind && liveKey(p.bind) === key);
+  if (!parts.length) return null;
+  const bind = parts[0].bind!;
+  const x0 = Math.min(...parts.map((p) => (p.x - p.w / 2) * W));
+  const x1 = Math.max(...parts.map((p) => (p.x + p.w / 2) * W));
+  const y0 = Math.min(...parts.map((p) => p.y * H));
+  const y1 = Math.max(...parts.map((p) => Math.min(1, p.y + p.h) * H));
+  const z0 = Math.min(...parts.map((p) => (p.z - p.d / 2) * D));
+  const z1 = Math.max(...parts.map((p) => (p.z + p.d / 2) * D));
+  const cx = (x0 + x1) / 2;
+  const cy = (y0 + y1) / 2;
+  const cz = (z0 + z1) / 2;
+  let pivot: [number, number, number] = [cx, cy, cz];
+  if (bind.kind === "open") {
+    const hinge = bind.hinge ?? "left";
+    pivot = hinge === "left" ? [x0, cy, z1] : hinge === "right" ? [x1, cy, z1] : hinge === "top" ? [cx, y1, z1] : [cx, y0, z1];
+  } else if (bind.kind === "level") pivot = [cx, y0, cz];
+  const lit = bind.kind === "blink" || bind.kind === "glow";
+  // the edges move with the part (a neon door keeps its glowing outline); a status light has none
+  const b = new Builder(buf, lit ? new LineBuffer() : lines, (x, z) => [x - pivot[0], z - pivot[2]]);
+  const before = finish;
+  finish = finishColors(placed);
+  try {
+    packModel(b, { ...item, size: [W, D, H], parts: lit ? parts.map((p) => ({ ...p, glow: true })) : parts }, W, D, H, -pivot[1], lit ? 0xffffff : null);
+  } finally {
+    finish = before;
+  }
+  // its own colour: what a status light or a glowing part shows while no entity is linked
+  return { pivot, bind, depth: D, rest: packColor(parts[0].color, false) ?? 0xffffff };
+}
+
+/**
+ * The turning parts of a pack item (fan blades, #1084) as a model of their own around their pivot – the middle of
+ * those parts – in the item's own coordinates (not turned, not mirrored, standing on y = 0). The viewer places it at
+ * the pivot and turns it about `axis`. Null for an item without such parts.
+ */
+export function pushPackSpin(buf: GeoBuffer, item: PackItem, w: number, d: number, h: number): { pivot: [number, number, number]; axis: "y" | "z" } | null {
+  const W = Math.max(0.05, w);
+  const D = Math.max(0.05, d);
+  const H = Math.max(0.005, h);
+  const parts = fitParts(item, W, D, H).filter((p) => p.spin === "y" || p.spin === "z");
+  if (!parts.length) return null;
+  const mean = (f: (p: PackPart) => number) => parts.reduce((s, p) => s + f(p), 0) / parts.length;
+  const px = mean((p) => p.x) * W;
+  const pz = mean((p) => p.z) * D;
+  const py = mean((p) => p.y + p.h / 2) * H;
+  const b = new Builder(buf, new LineBuffer(), (x, z) => [x - px, z - pz]);
+  // the parts are fitted already: drawn at the size they were fitted to
+  packModel(b, { ...item, size: [W, D, H], parts }, W, D, H, -py, null);
+  return { pivot: [px, py, pz], axis: parts[0].spin as "y" | "z" };
 }

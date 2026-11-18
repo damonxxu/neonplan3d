@@ -2,7 +2,7 @@
 // up/stop/down for blinds, on/off for switches, with a slider and a way to the full details.
 
 import { css, html, LitElement, nothing } from "lit";
-import { type CarState, entityName, isUnavailable, kindOf } from "../devices.ts";
+import { type CarState, coverCall, coverTiltButtons, entityName, isUnavailable, kindOf, slatTilt } from "../devices.ts";
 import { hasFeature } from "../features.ts";
 import { translate, type I18nKey } from "../i18n.ts";
 import { openMoreInfo, stateText } from "../markers.ts";
@@ -45,19 +45,25 @@ export class Fp3dQuickMenu extends LitElement {
     car: { attribute: false },
     presets: { attribute: false },
     confirmSwitch: { type: Boolean },
+    doorLock: { type: Boolean },
     pro: { type: Boolean },
+    slatInvert: { type: Boolean },
     low: { type: Boolean, reflect: true },
     _tick: { state: true },
   };
 
   declare hass: HomeAssistant;
   declare entity: string;
+  /** The window of this blind turns its slats' tilt round ("Invert slats"): shown and sent the other way. */
+  declare slatInvert: boolean;
   /** Auto Pro: the car behind a parking spot's pin – its menu replaces the entity's. */
   declare car: CarState | null;
   /** Klang & Kino: stations and playlists to start on a speaker. */
   declare presets: { id: string; label: string; type: string; content: string }[];
   /** Ask before the power button switches. */
   declare confirmSwitch: boolean;
+  /** The smart lock of a door that was tapped (#682): lock or unlock, always asking first. */
+  declare doorLock: boolean;
   /** The camera cockpit is unlocked (otherwise the look-through button shows a lock). */
   declare pro: boolean;
   /** Tablet level: no blur behind the menu. */
@@ -102,6 +108,12 @@ export class Fp3dQuickMenu extends LitElement {
 
   private call(domain: string, service: string, data: Record<string, unknown> = {}): void {
     void this.hass.callService(domain, service, { entity_id: this.entity, ...data });
+  }
+
+  /** Open, close or stop the cover the way it can: a slat-only blind by its tilt (#920). */
+  private cover(st: HassEntity, what: "open" | "close" | "stop"): void {
+    const c = coverCall(st, what);
+    this.call("cover", c.service, c.data);
   }
 
   private close(): void {
@@ -165,21 +177,22 @@ export class Fp3dQuickMenu extends LitElement {
     const at = (p: number) => pos !== null && Math.abs(pos - p) < 3;
     const ring = [
       // moving asks first when the blind is marked so; stopping never asks
-      slot("▲", this.t("cover_open"), () => this.ask() && this.call("cover", "open_cover"), at(100)),
+      slot("▲", this.t("cover_open"), () => this.ask() && this.cover(st, "open"), at(100)),
       ...(setPos ? [75, 50].map((p) => slot(`${p}`, `${p} %`, () => this.ask() && this.call("cover", "set_cover_position", { position: p }), at(p))) : []),
-      slot("▼", this.t("cover_close"), () => this.ask() && this.call("cover", "close_cover"), at(0)),
+      slot("▼", this.t("cover_close"), () => this.ask() && this.cover(st, "close"), at(0)),
       ...(setPos ? [25].map((p) => slot(`${p}`, `${p} %`, () => this.ask() && this.call("cover", "set_cover_position", { position: p }), at(p))) : []),
-      slot("■", this.t("cover_stop"), () => this.call("cover", "stop_cover"), moving),
+      slot("■", this.t("cover_stop"), () => this.cover(st, "stop"), moving),
     ];
-    // the centre shows the blind: its closed part fills from the top
-    const closed = pos === null ? (st.state === "closed" ? 100 : 0) : 100 - pos;
+    // the centre shows the blind: its closed part fills from the top (a slat-only blind: by its tilt, #920)
+    const tilt = slatTilt(st, this.slatInvert);
+    const closed = pos !== null ? 100 - pos : tilt !== null ? 100 - tilt : st.state === "closed" ? 100 : 0;
     return html`<div class="qm-ring">
         ${this.ring(ring)}
         <button
           class="qm-power qm-blind ${closed < 100 ? "qm-on" : ""}"
           style="--closed:${closed}%"
           aria-label=${moving ? this.t("cover_stop") : closed > 50 ? this.t("cover_open") : this.t("cover_close")}
-          @click=${() => (moving ? this.call("cover", "stop_cover") : this.ask() && this.call("cover", closed > 50 ? "open_cover" : "close_cover"))}
+          @click=${() => (moving ? this.cover(st, "stop") : this.ask() && this.cover(st, closed > 50 ? "open" : "close"))}
         >
           <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 4h16M5 4v15M19 4v15M7 8h10M7 12h10M7 16h10" /></svg>
           <b>${pos !== null ? `${pos} %` : stateText(this.hass, st)}</b>
@@ -202,7 +215,8 @@ export class Fp3dQuickMenu extends LitElement {
   /** Slats of a venetian blind or a Raffstore: a tilt slider when the cover sets a tilt position, else open/close tilt buttons. */
   private renderTilt(st: HassEntity) {
     const features = ((st.attributes.supported_features as number) ?? 0) | 0;
-    const tilt = typeof st.attributes.current_tilt_position === "number" ? (st.attributes.current_tilt_position as number) : null;
+    const tilt = slatTilt(st, this.slatInvert);
+    const raw = (shown: number) => (this.slatInvert ? 100 - shown : shown);
     if (features & COVER_SET_TILT && tilt !== null)
       return html`<label class="qm-tilt"
         ><span>${this.t("cover_tilt")} · ${tilt} %</span>
@@ -213,9 +227,9 @@ export class Fp3dQuickMenu extends LitElement {
           max="100"
           .value=${String(tilt)}
           aria-label=${this.t("cover_tilt")}
-          @change=${(e: Event) => this.call("cover", "set_cover_tilt_position", { tilt_position: Number((e.target as HTMLInputElement).value) })}
+          @change=${(e: Event) => this.call("cover", "set_cover_tilt_position", { tilt_position: raw(Number((e.target as HTMLInputElement).value)) })}
       /></label>`;
-    if (features & (COVER_OPEN_TILT | COVER_CLOSE_TILT))
+    if (coverTiltButtons(st))
       return html`<div class="qm-tilt-buttons">
         ${features & COVER_OPEN_TILT ? html`<button class="qm-swatch qm-slot" @click=${() => this.call("cover", "open_cover_tilt")}>${this.t("cover_tilt_open")}</button>` : nothing}
         ${features & COVER_CLOSE_TILT ? html`<button class="qm-swatch qm-slot" @click=${() => this.call("cover", "close_cover_tilt")}>${this.t("cover_tilt_close")}</button>` : nothing}
@@ -314,6 +328,21 @@ export class Fp3dQuickMenu extends LitElement {
       </div>`;
   }
 
+  /** A door's smart lock: one button that locks or unlocks by the state, asking first either way (#682). */
+  private renderDoorLock(st: HassEntity) {
+    const locked = st.state === "locked" || st.state === "locking" || st.state === "jammed";
+    const name = entityName(this.hass, this.entity);
+    const act = () => {
+      if (!confirm(this.t(locked ? "door_unlock_confirm" : "door_lock_confirm", { name }))) return;
+      this.call("lock", locked ? "unlock" : "lock");
+      this.close();
+    };
+    return html`<p class="qm-car-line">${stateText(this.hass, st)}</p>
+      <div class="qm-car">
+        <button class="qm-swatch qm-slot ${locked ? "qm-slot-on" : ""}" @click=${act}>${locked ? `🔓 ${this.t("door_unlock_btn")}` : `🔒 ${this.t("door_lock_btn")}`}</button>
+      </div>`;
+  }
+
   private renderToggle(st: HassEntity) {
     const on = st.state === "on" || st.state === "unlocked" || st.state === "playing";
     const domain = st.entity_id.split(".")[0];
@@ -337,6 +366,8 @@ export class Fp3dQuickMenu extends LitElement {
       ? this.renderCar(this.car)
       : isUnavailable(st)
       ? html`<p class="qm-note">${stateText(this.hass, st)}</p>`
+      : this.doorLock && kind === "lock"
+        ? this.renderDoorLock(st)
       : kind === "light"
         ? this.renderLight(st)
         : kind === "cover"

@@ -47,6 +47,24 @@ export function setVoiceHere(on: boolean): void {
   }
 }
 
+/** This device's screen name for Assist and the service `neonplan3d.ask` ("Küche"); empty: reacts to every sentence. */
+export function screenName(): string {
+  try {
+    return localStorage.getItem("neonplan3d.screen") ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setScreenName(name: string): void {
+  try {
+    if (name.trim()) localStorage.setItem("neonplan3d.screen", name.trim());
+    else localStorage.removeItem("neonplan3d.screen");
+  } catch {
+    // private mode: nothing remembered
+  }
+}
+
 /** The Assist pipeline chosen for this device (null: Home Assistant's preferred one). */
 export function voicePipeline(): string | null {
   try {
@@ -60,6 +78,24 @@ export function setVoicePipeline(id: string | null): void {
   try {
     if (id) localStorage.setItem("neonplan3d.voicePipeline", id);
     else localStorage.removeItem("neonplan3d.voicePipeline");
+  } catch {
+    // private mode: nothing remembered
+  }
+}
+
+/** The Home Assistant area this device hangs in, for sentences without a room ("Licht an"); null: none (as before). */
+export function voiceArea(): string | null {
+  try {
+    return localStorage.getItem("neonplan3d.voiceArea");
+  } catch {
+    return null;
+  }
+}
+
+export function setVoiceArea(id: string | null): void {
+  try {
+    if (id) localStorage.setItem("neonplan3d.voiceArea", id);
+    else localStorage.removeItem("neonplan3d.voiceArea");
   } catch {
     // private mode: nothing remembered
   }

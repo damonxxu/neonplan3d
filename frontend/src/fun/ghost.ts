@@ -53,10 +53,10 @@ function buildGhost(lib: FunLib) {
     const t = (i / 6) * (Math.PI / 2);
     profile.push([Math.cos(t) * 0.2, 0.08 + Math.sin(t) * 0.2]);
   }
-  const bodyMat = new lib.MeshBasicMaterial({ color: new lib.Color("#eef6ff"), transparent: true, opacity: 0, depthWrite: false, side: lib.DoubleSide });
+  const bodyMat = new lib.MeshBasicMaterial({ color: new lib.Color("#eef6ff"), transparent: true, opacity: 0, depthWrite: false, side: lib.DoubleSide, forceSinglePass: true });
   const body = new lib.Mesh(lathe(lib, profile, 18, 0.035), bodyMat);
   // a soft glow around it
-  const haloMat = new lib.MeshBasicMaterial({ color: new lib.Color("#7fe8ff"), transparent: true, opacity: 0, depthWrite: false, side: lib.DoubleSide });
+  const haloMat = new lib.MeshBasicMaterial({ color: new lib.Color("#7fe8ff"), transparent: true, opacity: 0, depthWrite: false, side: lib.DoubleSide, forceSinglePass: true });
   const halo = new lib.Mesh(lathe(lib, profile.map(([r, y]): [number, number] => [r * 1.25 + 0.02, y * 1.12]), 14, 0.04), haloMat);
   // eyes and an "o" mouth on the front (+z)
   const faceMat = new lib.MeshBasicMaterial({ color: new lib.Color("#141826"), transparent: true, opacity: 0, depthWrite: false });
@@ -151,8 +151,11 @@ export function startGhost(ctx: GhostContext): GhostController {
       ghost.root.rotation.z = Math.sin(t * 1.6) * 0.12;
       const fade = Math.min(1, t / FADE, (duration - t) / FADE);
       ghost.mats.forEach((m, j) => (m.opacity = ghost.opacity[j] * fade));
-      viewer.invalidate();
-      raf = requestAnimationFrame(step);
+      // on the tablet level at its slower pace (and not at all while the view rests)
+      viewer.animate();
+      // the tablet level draws it about 5 times a second: it moves on as often
+      if (viewer.low) timer = setTimeout(() => (raf = requestAnimationFrame(step)), 180);
+      else raf = requestAnimationFrame(step);
     };
     raf = requestAnimationFrame(step);
   }

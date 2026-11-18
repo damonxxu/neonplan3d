@@ -2,7 +2,8 @@
 // furniture has the type "pack:<pack id>:<item id>". Every bundle (main, editor, 3D) keeps its own
 // registry, filled with setPacks() from the packs the backend returns.
 
-import { builtinBase, ELECTRIC_FURNITURE, FURNITURE_SIZE, LIFT_SPOTS, spotDepth, surfaceHeight, WALL_LAMP_Y, type Floor, type Furniture } from "./model.ts";
+import type { PackSlot, PartBind } from "./live-parts.ts";
+import { builtinBase, techBase, ELECTRIC_FURNITURE, FURNITURE_SIZE, LIFT_SPOTS, outdoorGround, pointInPolygon, spotDepth, surfaceHeight, WALL_LAMP_Y, type Floor, type Furniture } from "./model.ts";
 import type { LampModel } from "./viewer/viewer3d.ts";
 
 /** A cooking zone of a pack cooktop: a thin disc lying on the item's top. */
@@ -28,15 +29,26 @@ export interface PackPart {
   /** Bottom and height in fractions of the item's height. */
   y: number;
   h: number;
-  /** "#rrggbb" or a palette role ("body", "fabric", "wood", …). */
+  /**
+   * "#rrggbb" or a palette role ("body", "fabric", "wood", …; "front" for door and drawer fronts since 3.5, drawn like
+   * "white" until a finish tells fronts and carcass apart, #1177).
+   */
   color: string;
   top?: string;
+  /**
+   * The finish a part follows although its colour is none of that finish's roles (3.5, #1175): it keeps its colour
+   * ("#rrggbb" or a role like "dark") until a placed item gets that finish – a gaming chair's red cover takes the fabric
+   * colour, a table's oak top the wood colour, a track light's dark housing the carcass colour.
+   */
+  finish?: "wood" | "fabric" | "front" | "body";
   /** Outline: true (soft blue), "glow" (cyan like the walls) or "faint". */
   edges?: boolean | "glow" | "faint";
   /** Lamps: shines in the colour and brightness of the linked light. */
   glow?: boolean;
   /** A screen: shows the linked media player's app colour and picture on its front (+z). */
   screen?: boolean;
+  /** The measures that stay when the item is resized: "w", "d", "h" or several ("wdh"). */
+  fix?: string;
   /** Loft: centre and extent of the top rectangle (defaults: the same as the bottom). */
   tx?: number;
   tz?: number;
@@ -46,6 +58,41 @@ export interface PackPart {
   axis?: "x" | "y" | "z";
   /** Turn of the part around its own centre (degrees around the vertical axis). */
   rot?: number;
+  /** An Advent candle's flame: drawn only from the n-th Sunday of Advent (1–4) until 6 January. */
+  advent?: number;
+  /**
+   * Turns while the item's fan runs (#1084): fan blades around the upright axis ("y", a ceiling fan) or the front axis
+   * ("z", a pedestal fan), about the middle of all the item's turning parts.
+   */
+  spin?: "y" | "z";
+  /** A live part (3.4): moves or lights with the entity linked to one of the item's slots (live-parts.ts). */
+  bind?: PartBind;
+}
+
+/** The axis an item's turning parts (fan blades) turn about, null without such parts. */
+export function packSpinAxis(item: Pick<PackItem, "parts"> | null | undefined): "y" | "z" | null {
+  const p = item?.parts.find((x) => x.spin === "y" || x.spin === "z");
+  return p ? (p.spin as "y" | "z") : null;
+}
+
+/**
+ * How many Advent candles burn on a day: one more each Sunday of Advent (the fourth is the Sunday before Christmas),
+ * all four until 6 January, none for the rest of the year.
+ */
+export function adventCandles(day: Date = new Date()): number {
+  const y = day.getFullYear();
+  const m = day.getMonth();
+  if (m === 0 && day.getDate() <= 6) return 4;
+  if (m < 10) return 0;
+  const today = new Date(y, m, day.getDate()).getTime();
+  // the fourth Sunday of Advent: the last Sunday before 25 December (24 December when that is a Sunday)
+  const dec24 = new Date(y, 11, 24);
+  const fourth = new Date(y, 11, 24 - dec24.getDay()).getTime();
+  const week = 7 * 24 * 3600 * 1000;
+  let n = 0;
+  // a week of daylight-saving drift cannot happen between late November and December, so plain weeks are exact
+  for (let k = 1; k <= 4; k++) if (today >= fourth - (4 - k) * week - 3600 * 1000) n = k;
+  return n;
 }
 
 export type PackSymbol =
@@ -71,8 +118,18 @@ export interface PackItem {
   hole?: boolean;
   /** A lamp: how its light spreads. */
   light?: LampModel;
+  /** Parts (fractions of the size); a part's `fix` ("w", "d", "h" or several) keeps that measure when the item is resized. */
   parts: PackPart[];
   symbol?: PackSymbol[];
+  /** Library (pack format since 1.23): what it is, the rooms it is made for, words that find it. */
+  group?: string;
+  room?: string[];
+  tags?: string[];
+  /** Variants of one thing (a table in three lengths) share a family; the variant names the chip, by language. */
+  family?: string;
+  variant?: Record<string, string>;
+  /** Slots its live parts are tied to (3.4): the editor links an entity to each. */
+  slots?: PackSlot[];
 }
 
 export interface FurniturePack {
@@ -88,6 +145,11 @@ export interface FurniturePack {
   /** Pro features the pack unlocks (see features.ts). */
   features?: string[];
   items: PackItem[];
+  /** A module (code the shop delivers; see modules.ts) – the code itself is fetched apart. It runs only once an
+   * admin approved exactly this code (`approved`); `sha` is the code's fingerprint, `size` its length. */
+  module?: { api: number; kind: string; approved?: boolean; size?: number; sha?: string };
+  /** A new release of the module code that waits for an admin's approval (the approved one keeps running). */
+  pending?: { release: number; size: number; sha: string };
   imported_at?: number;
 }
 
@@ -136,9 +198,41 @@ export function packMovingPart(kind: PackMotion, p: PackPart): boolean {
   return kind === "curtain" ? p.color === "fabric" : p.shape !== "cyl";
 }
 
+/**
+ * A pack's sensor model (motion, mmWave presence, contact, leak, CO₂, temperature …): it follows a sensor of its own,
+ * whatever class the integration gave it (Local Tuya's motion sensors have none, #810).
+ */
+export function isPackSensor(type: string): boolean {
+  if (!isPackType(type)) return false;
+  return packItem(type)?.family === "sensor" || /:(\w+_sensor|door_contact|presence_mmwave)$/.test(type);
+}
+
 /** A robot vacuum: the built-in dock, or one from a pack (the smart home pack's robot with its dock, #470). */
 export function isRobotVacuum(type: string): boolean {
   return type === "robot_vacuum" || (isPackType(type) && type.endsWith(":robot_vacuum"));
+}
+
+/**
+ * A pack's robot vacuum model shows the dock at the back and the robot in front of it (+z). The robot's own parts
+ * are left out of the static model and drive around as the viewer's robot instead (#645).
+ */
+export function packRobotPart(p: Pick<PackPart, "z">): boolean {
+  return p.z > 0.05;
+}
+
+/** Where the pack's robot sits in its model: the centre of its largest disc (fraction of the depth; 0.227 when unknown). */
+export function packRobotCentre(item: PackItem | undefined): number {
+  const discs = (item?.parts ?? []).filter((p) => p.shape === "cyl" && packRobotPart(p));
+  if (!discs.length) return 0.227;
+  return discs.reduce((a, b) => (b.w * b.d > a.w * a.d ? b : a)).z;
+}
+
+/**
+ * A pack's heater with hot water (a heat pump's indoor unit, a gas boiler, a buffer tank, a hot water tank): besides a
+ * climate entity it takes a water_heater entity like the built-in water heater (#645).
+ */
+export function isPackHeater(type: string): boolean {
+  return isPackType(type) && /:(heat_pump_indoor|gas_boiler|buffer_tank|water_heater)$/.test(type);
 }
 
 /** The pack item of a furniture type (undefined for built-in types and removed packs). */
@@ -200,7 +294,14 @@ export function packItemName(item: PackItem, language: string): string {
 // English names of our own packs: a pack file carries one (German) name, the furniture inside both (#224)
 const PACK_NAMES_EN: Record<string, string> = {
   architecture: "Architecture & Fit-out",
+  balcony: "Balcony & Small Spaces",
   bath: "Bathroom",
+  cabinet_kit: "Cabinets & Shelves – Kit",
+  deco: "Decor & Plants",
+  dining_hall: "Dining Room & Hallway",
+  fun_halloween: "Fun Pack: Halloween",
+  fun_winter: "Fun Pack: Winter & Christmas",
+  fun_pets: "Fun Pack: Pets",
   bedroom: "Bedroom",
   cinema: "Home Cinema & Hi-Fi",
   exclusive: "Exclusive: Smart Fridge",
@@ -225,6 +326,13 @@ const PACK_NAMES_EN: Record<string, string> = {
   pro_screens: "Pro: Live Screens",
   pro_sound: "Pro: Sound & Cinema",
   pro_weather: "Pro: Weather Outside",
+  pro_heat: "Pro: Heat Pro",
+  pro_household: "Pro: Household Pro",
+  frames: "Digital Picture Frames",
+  homelab: "Homelab & Workshop",
+  announce: "Module: Announcements",
+  voice_answers: "Module: The house answers",
+  window_watch: "Module: Window watch",
 };
 
 /** A pack's name in the user's language: our own packs in English outside German, others as they come. */
@@ -233,26 +341,43 @@ export function packName(pack: { id: string; name: string }, language: string): 
   const key = pack.id.replace(/^mastershort\./, "");
   const sample = key.endsWith("_sample");
   const en = PACK_NAMES_EN[sample ? key.slice(0, -"_sample".length) : key];
-  return en ? (sample ? `${en} – Sampler` : en) : pack.name;
+  if (en) return sample ? `${en} – Sampler` : en;
+  // one of ours newer than this table: at least its kind in English (#825)
+  return pack.name.replace(/^Modul:/, "Module:").replace(/^Fun-Pack:/, "Fun Pack:");
 }
 
 /** Height of the bottom of a pack item, a wall light or an LED strip above the floor (0 for other built-in furniture). */
-export function mountBase(floor: Floor, f: Pick<Furniture, "type" | "x" | "z" | "h"> & { mount_y?: number | null }): number {
+export function mountBase(floor: Floor, f: Pick<Furniture, "type" | "x" | "z" | "h"> & { mount_y?: number | null; variant?: string | null }): number {
   const item = packItem(f.type);
   if (f.mount_y != null) return f.mount_y;
+  // an access point under the ceiling, a slim water heater on the wall (drawn from 0 and lifted by this)
+  const tech = techBase(f, floor.height);
+  if (tech !== null) return tech;
   // wall lights at the usual height, LED strips just under the ceiling
   if (f.type === "lamp_wall") return WALL_LAMP_Y;
   if (LIFT_SPOTS.has(f.type)) return Math.max(0, floor.height - spotDepth(f.type, f.h));
   if (f.type === "led_strip") return Math.max(0, floor.height - 0.04 - Math.max(0.02, f.h));
   switch (item?.mount) {
     case "surface":
-      return surfaceHeight(floor, f.x, f.z);
+      return groundUnder(floor, f) + surfaceHeight(floor, f.x, f.z, f.h);
     case "wall":
       return item.wall_y ?? 1;
     case "ceiling":
       return Math.max(0, floor.height - f.h);
     default:
       // built-in models: where they are drawn by default (a wall cabinet at 1.45 m)
-      return item ? 0 : builtinBase(f);
+      if (item) return groundUnder(floor, f);
+      return builtinBase(f) || groundUnder(floor, f);
   }
+}
+
+/**
+ * Where an item standing on the ground stands: 0 in a room, outside on the lawn, terrace or lowered ground beneath
+ * it – a bin, a mower or outdoor steps no longer float above a garden lower than the floor (#708).
+ */
+export function groundUnder(floor: Floor, f: Pick<Furniture, "x" | "z">): number {
+  // a floor without rooms has no outside (a plan of free walls only)
+  const rooms = floor.rooms.filter((r) => r.points.length >= 3);
+  if (!rooms.length || rooms.some((r) => pointInPolygon([f.x, f.z], r.points))) return 0;
+  return outdoorGround(floor, f.x, f.z);
 }

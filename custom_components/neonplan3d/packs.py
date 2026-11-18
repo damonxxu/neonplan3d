@@ -41,10 +41,11 @@ STUDIO_KEYS = {"bdac241ae58b", "4d93b50c955c"}
 
 _ID = vol.All(str, vol.Match(r"^[a-z0-9][a-z0-9_.-]{0,39}$"))
 _TEXT = vol.All(str, vol.Length(min=1, max=80))
-# a colour: "#rrggbb" or a role of the built-in palette (so packs follow the look of the plan)
+# a colour: "#rrggbb" or a role of the built-in palette (so packs follow the look of the plan); "front" (3.5) marks
+# door and drawer fronts, drawn like "white" until a finish tells fronts and carcass apart (#1177)
 _COLOR = vol.Any(
     vol.Match(r"^#[0-9a-fA-F]{6}$"),
-    vol.In(["body", "fabric", "cushion", "wood", "white", "metal", "dark", "glass", "plant", "pot", "accent"]),
+    vol.In(["body", "fabric", "cushion", "wood", "white", "front", "metal", "dark", "glass", "plant", "pot", "accent"]),
 )
 _FRACTION = vol.All(vol.Coerce(float), vol.Range(min=-0.5, max=0.5))
 _SPAN = vol.All(vol.Coerce(float), vol.Range(min=0.001, max=1))
@@ -64,6 +65,9 @@ PART_SCHEMA = vol.Schema(
         vol.Required("h"): _SPAN,
         vol.Required("color"): _COLOR,
         vol.Optional("top"): _COLOR,
+        # the finish a part in a colour of its own follows (3.5, #1175): it keeps its colour until a placed item gets
+        # that finish (a chair's red cover takes the fabric colour, a table's oak top the wood colour)
+        vol.Optional("finish"): vol.In(["wood", "fabric", "front", "body"]),
         # outline: True (soft blue), "glow" (cyan like the walls) or "faint"
         vol.Optional("edges", default=False): vol.Any(bool, vol.In(["glow", "faint"])),
         # lamps: the part shines in the colour and brightness of the linked light
@@ -79,6 +83,25 @@ PART_SCHEMA = vol.Schema(
         vol.Optional("axis"): vol.In(["x", "y", "z"]),
         # turn of the part around its own centre (degrees around the vertical axis): spiral steps, diagonals
         vol.Optional("rot"): vol.All(vol.Coerce(float), vol.Range(min=-360, max=360)),
+        # free sizes (1.23): the measures that stay when the item is resized ("w", "d", "h" or several): legs,
+        # arms and plates keep their size and their distance from the edge, the parts between them stretch
+        vol.Optional("fix"): vol.All(str, vol.Match(r"^[wdh]{1,3}$")),
+        # an Advent candle's flame (2.3): drawn only from the n-th Sunday of Advent until 6 January
+        vol.Optional("advent"): vol.All(vol.Coerce(int), vol.Range(min=1, max=4)),
+        # fan blades (3.2.1, #1084): turn while the item's fan runs, about the upright ("y") or the front axis ("z")
+        vol.Optional("spin"): vol.In(["y", "z"]),
+        # a live part (3.4): moves or lights with the entity of one of the item's slots - a door opens ("open",
+        # turning about an edge by `amount` degrees), a drawer slides out ("slide", a share of the depth), a drum
+        # turns ("spin"), a tank fills ("level"), a status light shows ok / off / a fault ("blink"), a part glows
+        vol.Optional("bind"): vol.Schema(
+            {
+                vol.Required("slot"): vol.All(str, vol.Match(r"^[a-z0-9_]{1,24}$")),
+                vol.Required("kind"): vol.In(["open", "slide", "spin", "level", "blink", "glow"]),
+                vol.Optional("hinge"): vol.In(["left", "right", "top", "bottom"]),
+                vol.Optional("axis"): vol.In(["x", "y", "z"]),
+                vol.Optional("amount"): vol.All(vol.Coerce(float), vol.Range(min=0, max=180)),
+            }
+        ),
     }
 )
 
@@ -134,6 +157,30 @@ ITEM_SCHEMA = vol.Schema(
         ),
         vol.Required("parts"): vol.All([PART_SCHEMA], vol.Length(min=1, max=60)),
         vol.Optional("symbol"): vol.All([SYMBOL_SCHEMA], vol.Length(max=40)),
+        # the library (since 1.23): what the item is, the rooms it is made for, words that find it, and
+        # variants of one thing (a table in three lengths) as a family with the variant's name by language
+        vol.Optional("group"): _ID,
+        vol.Optional("room"): vol.All([_ID], vol.Length(max=12)),
+        vol.Optional("tags"): vol.All([vol.All(str, vol.Length(min=1, max=30))], vol.Length(max=12)),
+        vol.Optional("family"): _ID,
+        vol.Optional("variant"): vol.All({vol.All(str, vol.Length(min=2, max=5)): _TEXT}, vol.Length(min=1, max=10)),
+        # slots of the live parts (3.4): the editor links an entity to each (names by language, fitting domains)
+        vol.Optional("slots"): vol.All(
+            [
+                vol.Schema(
+                    {
+                        vol.Required("id"): vol.All(str, vol.Match(r"^[a-z0-9_]{1,24}$")),
+                        vol.Required("name"): vol.All(
+                            {vol.All(str, vol.Length(min=2, max=5)): _TEXT}, vol.Length(min=1, max=24)
+                        ),
+                        vol.Optional("domains"): vol.All(
+                            [vol.All(str, vol.Match(r"^[a-z_]{2,30}$"))], vol.Length(max=8)
+                        ),
+                    }
+                )
+            ],
+            vol.Length(max=8),
+        ),
     }
 )
 
@@ -149,10 +196,26 @@ KNOWN_FEATURES = [
     "time_travel",
     "pool",
     "household",
+    # digital picture frames (a pack with furniture and the "frames" feature)
+    "frames",
     # fun packs: free extras one picks up in the shop (pets, later seasonal ones)
     "fun_pets",
     "fun_halloween",
+    "fun_winter",
 ]
+
+# A module: code the shop delivers (not part of the public repository), run by NeonPlan's module loader.
+# `api` is the loader interface it was written for, `kind` where it plugs in. Signed and bound like any pack.
+# voice: answers spoken questions; stage: draws in the house (water, cards, warnings, editor fields)
+MODULE_KINDS = ["voice", "stage"]
+MODULE_SCHEMA = vol.Schema(
+    {
+        vol.Required("api"): 1,
+        vol.Required("kind"): vol.In(MODULE_KINDS),
+        # the module's JavaScript (an ES module with a default export)
+        vol.Required("code"): vol.All(str, vol.Length(min=1, max=400_000)),
+    }
+)
 
 PAYLOAD_SCHEMA = vol.Schema(
     {
@@ -174,6 +237,8 @@ PAYLOAD_SCHEMA = vol.Schema(
             vol.Length(max=10),
         ),
         vol.Required("items"): vol.All([ITEM_SCHEMA], vol.Length(min=0, max=200)),
+        # a module (see MODULE_SCHEMA); such a pack usually carries no furniture
+        vol.Optional("module"): MODULE_SCHEMA,
     }
 )
 
@@ -212,6 +277,19 @@ def parts_of(text: str) -> tuple[dict[str, Any], dict[str, str]]:
     return data["payload"], {"key": sig["key"], "sig": sig["sig"]}
 
 
+def _unknown_value(err: vol.Invalid) -> bool:
+    """Whether a value outside a known list failed: voluptuous says so in its message; Probatio, which checks
+    schemas since Home Assistant 2026.9, gives it the code "not_in_list" (pointed out by hohoanganh)."""
+    found = getattr(err, "errors", None) or [err]
+    # a field this version does not know yet (a part property of a newer pack release) counts the same
+    return any(
+        getattr(e, "code", None) in ("not_in_list", "extra_key", "extra_keys_not_allowed")
+        or "value must be one of" in str(e)
+        or "extra keys not allowed" in str(e)
+        for e in found
+    )
+
+
 def validate_payload(payload: Any) -> dict[str, Any]:
     """Check the content of a pack (without its signature); raises PackError."""
     features = payload.get("features") if isinstance(payload, dict) else None
@@ -220,18 +298,22 @@ def validate_payload(payload: Any) -> dict[str, Any]:
         if unknown:
             # a Pro add-on newer than this installation (#218): ask for an update, not a cryptic error
             raise PackError("needs_update", ", ".join(unknown))
+    # a module written for a newer loader: an update, not a broken pack
+    module = payload.get("module") if isinstance(payload, dict) else None
+    if isinstance(module, dict) and isinstance(module.get("api"), int) and module["api"] > 1:
+        raise PackError("needs_update", f"module api {module['api']}")
     try:
         clean = PAYLOAD_SCHEMA(payload)
     except vol.Invalid as err:
         # a value this version does not know yet (a new item kind of a newer pack release)
-        if "value must be one of" in str(err):
+        if _unknown_value(err):
             raise PackError("needs_update", str(err)) from err
         raise PackError("invalid_content", str(err)) from err
     ids = [item["id"] for item in clean["items"]]
     if len(ids) != len(set(ids)):
         raise PackError("invalid_content", "item ids must be unique")
-    if not ids and not clean["features"]:
-        raise PackError("invalid_content", "a pack needs items or features")
+    if not ids and not clean["features"] and not clean.get("module"):
+        raise PackError("invalid_content", "a pack needs items, features or a module")
     return clean
 
 
@@ -270,8 +352,18 @@ def verify_pack(text: str, keys: dict[str, str] | None = None, instance: str | N
     except (InvalidSignature, ValueError) as err:
         raise PackError("bad_signature") from err
     payload = validate_payload(data["payload"])
-    if signature["key"] in STUDIO_KEYS and (not str(payload["id"]).startswith("studio.") or payload["features"]):
+    if signature["key"] in STUDIO_KEYS and (
+        not str(payload["id"]).startswith("studio.") or payload["features"] or payload.get("module")
+    ):
         raise PackError("bad_signature", "the studio key signs studio furniture only")
     if instance is not None and payload["instance"] is not None and payload["instance"] != instance:
         raise PackError("wrong_instance", "the pack is bound to another installation")
     return payload
+
+
+def module_sha(pack: dict[str, Any] | None) -> str | None:
+    """Fingerprint of a pack's module code (what an admin approves), None for a pack without code."""
+    module = (pack or {}).get("module")
+    if not isinstance(module, dict) or not isinstance(module.get("code"), str):
+        return None
+    return hashlib.sha256(module["code"].encode("utf-8")).hexdigest()

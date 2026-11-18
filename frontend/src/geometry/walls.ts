@@ -37,6 +37,24 @@ export interface Wall {
   free?: string;
   /** Own height in metres; undefined = full floor height. */
   height?: number;
+  /** A sloping top: the heights h0 at plan point p and h1 at q, straight in between (D569). */
+  slope?: WallSlope;
+}
+
+export interface WallSlope {
+  p: Vec2;
+  q: Vec2;
+  h0: number;
+  h1: number;
+}
+
+/** The top of a sloping wall above a plan point (the point projected onto its line, held at the ends). */
+export function slopeTop(slope: WallSlope, x: number, z: number): number {
+  const dx = slope.q[0] - slope.p[0];
+  const dz = slope.q[1] - slope.p[1];
+  const l2 = dx * dx + dz * dz;
+  const t = l2 > 0 ? Math.min(1, Math.max(0, ((x - slope.p[0]) * dx + (z - slope.p[1]) * dz) / l2)) : 0;
+  return slope.h0 + (slope.h1 - slope.h0) * t;
 }
 
 export interface WallOptions {
@@ -52,6 +70,8 @@ export interface WallResult {
   warnings: string[];
   /** Room pairs whose shared wall is left out ("no wall"): they form one space, also for the light. */
   open: [string, string][];
+  /** The room edges of each wall left out by a height of 0 (the editor shows and lifts it from either room, #1151). */
+  noWalls: WallSource[][];
 }
 
 interface Segment {
@@ -66,6 +86,7 @@ interface Segment {
 interface Draft {
   free?: string;
   height?: number;
+  slope?: WallSlope;
   a: number;
   b: number;
   left: number;
@@ -206,9 +227,27 @@ export function generateWalls(rooms: readonly Room[], options: WallOptions, free
     const ts = list.map((s) => rooms.find((r) => r.id === s.room)?.wall_thickness?.[s.edge]).filter((t): t is number => typeof t === "number" && t > 0);
     return ts.length ? Math.max(...ts) : undefined;
   };
+  // a sloping wall (D569): set on one of its room edges, as a line in the plan with its two heights
+  const slopeOf = (list: Segment[]): WallSlope | undefined => {
+    for (const s of list) {
+      const room = rooms.find((r) => r.id === s.room);
+      const sl = room?.wall_slopes?.[s.edge];
+      if (!room || !sl) continue;
+      const p = room.points[s.edge];
+      const q = room.points[(s.edge + 1) % room.points.length];
+      return { p: [p[0], p[1]], q: [q[0], q[1]], h0: Math.max(0.05, sl[0]), h1: Math.max(0.05, sl[1]) };
+    }
+    return undefined;
+  };
   // a height of 0 on an edge: no wall there at all (an open floor plan whose rooms share one space)
   const noWall = (list: Segment[]): boolean => list.some((s) => heightSet(s) === 0);
+  // its height, or a slope and the height of its higher end
+  const withSlope = (list: Segment[]): { height?: number; slope?: WallSlope } => {
+    const slope = slopeOf(list);
+    return slope ? { height: Math.max(slope.h0, slope.h1), slope } : { height: heightOf(list) };
+  };
   const open: [string, string][] = [];
+  const noWalls: WallSource[][] = [];
   let drafts: Draft[] = [];
   for (const g of groups.values()) {
     const first = g[0];
@@ -218,6 +257,7 @@ export function generateWalls(rooms: readonly Room[], options: WallOptions, free
     }
     if (noWall(partner ? [first, partner] : [first])) {
       if (partner) open.push([first.room, partner.room]);
+      noWalls.push(partner ? [src(first), src(partner)] : [src(first)]);
       continue;
     }
     if (partner) {
@@ -231,7 +271,7 @@ export function generateWalls(rooms: readonly Room[], options: WallOptions, free
         roomLeft: first.room,
         roomRight: partner.room,
         sources: [src(first), src(partner)],
-        height: heightOf([first, partner]),
+        ...withSlope([first, partner]),
       });
     } else {
       drafts.push({
@@ -243,7 +283,7 @@ export function generateWalls(rooms: readonly Room[], options: WallOptions, free
         roomLeft: first.room,
         roomRight: null,
         sources: [src(first)],
-        height: heightOf([first]),
+        ...withSlope([first]),
       });
     }
   }
@@ -281,7 +321,10 @@ export function generateWalls(rooms: readonly Room[], options: WallOptions, free
     const room = rooms.find((r) => r.points.length >= 3 && pointInPolygon(mid, r.points))?.id ?? null;
     const half = (w.thickness ?? options.interior) / 2;
     const height = typeof w.height === "number" && w.height > 0 ? w.height : undefined;
-    drafts.push({ free: w.id, a: ia, b: ib, left: half, right: half, exterior: false, roomLeft: room, roomRight: room, sources: [], height });
+    // a sloping free wall (#834): the same slope as a room edge's, from end a to end b
+    const sl = w.slope;
+    const slope: WallSlope | undefined = sl ? { p: [w.a[0], w.a[1]], q: [w.b[0], w.b[1]], h0: Math.max(0.05, sl[0]), h1: Math.max(0.05, sl[1]) } : undefined;
+    drafts.push({ free: w.id, a: ia, b: ib, left: half, right: half, exterior: false, roomLeft: room, roomRight: room, sources: [], ...(slope ? { height: Math.max(slope.h0, slope.h1), slope } : { height }) });
   });
 
   // 5. merge collinear runs through nodes where nothing else meets (never across a split point)
@@ -309,9 +352,10 @@ export function generateWalls(rooms: readonly Room[], options: WallOptions, free
       footprint,
       ...(w.free ? { free: w.free } : {}),
       ...(w.height !== undefined ? { height: w.height } : {}),
+      ...(w.slope ? { slope: w.slope } : {}),
     };
   });
-  return { walls, warnings: [...new Set(warnings)], open };
+  return { walls, warnings: [...new Set(warnings)], open, noWalls };
 }
 
 function wallId(a: Vec2, b: Vec2): string {
@@ -341,6 +385,9 @@ function mergeCollinear(drafts: Draft[], verts: Vec2[], fixed: ReadonlySet<numbe
       if (ids.length !== 2 || fixed.has(node)) continue;
       let w1 = list[ids[0]];
       let w2 = list[ids[1]];
+      // turned round only to line them up: when both were, the joined wall is turned back (an outer wall keeps
+      // its room on the left, else a blind on it was drawn inside the room)
+      const turned = w1.b !== node && w2.a !== node;
       if (w1.b !== node) w1 = flip(w1);
       if (w2.a !== node) w2 = flip(w2);
       if (w1.a === w2.b) continue; // two walls forming a closed loop
@@ -351,6 +398,8 @@ function mergeCollinear(drafts: Draft[], verts: Vec2[], fixed: ReadonlySet<numbe
         w1.free ||
         w2.free ||
         w1.height !== w2.height ||
+        !!w1.slope ||
+        !!w2.slope ||
         w1.exterior !== w2.exterior ||
         w1.roomLeft !== w2.roomLeft ||
         w1.roomRight !== w2.roomRight ||
@@ -359,7 +408,8 @@ function mergeCollinear(drafts: Draft[], verts: Vec2[], fixed: ReadonlySet<numbe
       ) {
         continue;
       }
-      const joined: Draft = { ...w1, b: w2.b, sources: joinSources(w1.sources, w2.sources) };
+      const lined: Draft = { ...w1, b: w2.b, sources: joinSources(w1.sources, w2.sources) };
+      const joined = turned ? flip(lined) : lined;
       const keep = list.filter((_, i) => i !== ids[0] && i !== ids[1]);
       keep.push(joined);
       list.length = 0;
@@ -474,6 +524,26 @@ export function pointOnRoomEdge(room: Room, edge: number, offset: number): Vec2 
 }
 
 /**
+ * A free wall drawn as an outer wall: rooms on one side only, the other side open. Returns the side of the
+ * rooms as seen along a -> b (true = left), or null for a wall with rooms on both sides or on neither.
+ */
+export function freeWallRoomLeft(wall: Pick<Wall, "a" | "b" | "left" | "right">, rooms: readonly Room[]): boolean | null {
+  const d = sub(wall.b, wall.a);
+  const n = leftNormal(unit(d));
+  const inRoom = (p: Vec2) => rooms.some((r) => r.points.length >= 3 && pointInPolygon(p, r.points));
+  let left = 0;
+  let right = 0;
+  for (const t of [0.2, 0.5, 0.8]) {
+    const p = add(wall.a, mul(d, t));
+    if (inRoom(add(p, mul(n, wall.left + 0.2)))) left++;
+    if (inRoom(sub(p, mul(n, wall.right + 0.2)))) right++;
+  }
+  if (left >= 2 && right === 0) return true;
+  if (right >= 2 && left === 0) return false;
+  return null;
+}
+
+/**
  * The line an opening sits on, as a room and an edge: the edge of its room, or for an opening in a
  * free wall a virtual triangle room whose edge 0 is the free wall (the room side is its left).
  */
@@ -498,6 +568,46 @@ export function locateOpening(walls: readonly Wall[], o: Pick<Opening, "wall" | 
   return { wall, s: dot(sub(p, wall.a), unit(sub(wall.b, wall.a))) };
 }
 
+/**
+ * The wall that carries on an outer wall in a straight line past one of its ends (`atEnd`: past b), where two
+ * rooms meet without a wall between them: same direction and thickness, and no other wall meeting there. An
+ * opening may reach across such a transition (#624).
+ */
+export function wallContinuation(walls: readonly Wall[], wall: Wall, atEnd: boolean): Wall | null {
+  // also an inner wall that one room splits with an extra corner on a straight line (a door wider than the piece, 2.0.6)
+  if (wall.free) return null;
+  const p = atEnd ? wall.b : wall.a;
+  const ax = unit(sub(wall.b, wall.a));
+  const at = (q: Vec2) => Math.hypot(q[0] - p[0], q[1] - p[1]) < 1e-3;
+  let next: Wall | null = null;
+  for (const w of walls) {
+    if (w === wall || !(at(w.a) || at(w.b))) continue;
+    // any other wall meeting at the transition (a partition, a corner) ends the reach
+    if (next || w.exterior !== wall.exterior || w.free || !at(atEnd ? w.a : w.b) || dot(unit(sub(w.b, w.a)), ax) < 0.9999) return null;
+    if (Math.abs(w.left - wall.left) > 1e-3 || Math.abs(w.right - wall.right) > 1e-3) return null;
+    next = w;
+  }
+  return next;
+}
+
+/**
+ * How far an opening on a room edge may reach past the edge's start and end: the length of the wall carrying
+ * on across a transition without a wall (see wallContinuation), 0 elsewhere.
+ */
+export function edgeReach(walls: readonly Wall[], room: Room, edge: number): [number, number] {
+  const len = Math.hypot(room.points[(edge + 1) % room.points.length][0] - room.points[edge][0], room.points[(edge + 1) % room.points.length][1] - room.points[edge][1]);
+  return ([0, len] as const).map((t) => {
+    const hit = locateOnWalls(walls, room, edge, t);
+    if (!hit) return 0;
+    const l = Math.hypot(hit.wall.b[0] - hit.wall.a[0], hit.wall.b[1] - hit.wall.a[1]);
+    // the edge's end must be the wall's end on that side
+    const atEnd = hit.s > l / 2;
+    if (Math.abs(hit.s - (atEnd ? l : 0)) > 1e-3) return 0;
+    const next = wallContinuation(walls, hit.wall, atEnd);
+    return next ? Math.hypot(next.b[0] - next.a[0], next.b[1] - next.a[1]) : 0;
+  }) as [number, number];
+}
+
 /** Locate a position on a room edge in the generated walls: the wall and the distance from wall.a. */
 export function locateOnWalls(walls: readonly Wall[], room: Room, edge: number, offset: number): { wall: Wall; s: number } | null {
   for (const wall of walls) {
@@ -507,4 +617,49 @@ export function locateOnWalls(walls: readonly Wall[], room: Room, edge: number, 
     return { wall, s: dot(sub(p, wall.a), unit(sub(wall.b, wall.a))) };
   }
   return null;
+}
+
+/**
+ * Where a wall switch or socket is drawn (#593): a plate whose centre lies inside a wall (dropped onto the wall in
+ * the plan) moves out onto the wall face it looks at, and on a wall lower than its mount height it comes down so it
+ * stays on the wall (its bottom at most 10 cm under the wall top). An explicit mount height is kept. `base` is its
+ * mount height (mountBase); returns the plan position and the bottom height to draw it at.
+ */
+export function placeWallPlate(
+  walls: readonly Wall[],
+  f: { x: number; z: number; rotation: number; d: number; h: number; mount_y?: number | null },
+  floorHeight: number,
+  base: number,
+): { x: number; z: number; y: number } {
+  const a = (f.rotation * Math.PI) / 180;
+  const front: Vec2 = [-Math.sin(a), Math.cos(a)];
+  const d = Math.max(0.005, f.d);
+  let best: { x: number; z: number; top: number; off: number } | null = null;
+  for (const w of walls) {
+    const len = Math.hypot(w.b[0] - w.a[0], w.b[1] - w.a[1]);
+    if (len < 0.05) continue;
+    const u: Vec2 = [(w.b[0] - w.a[0]) / len, (w.b[1] - w.a[1]) / len];
+    const s = (f.x - w.a[0]) * u[0] + (f.z - w.a[1]) * u[1];
+    if (s < -0.02 || s > len + 0.02) continue;
+    // signed distance from the wall line towards its left face
+    const n: Vec2 = [-u[1], u[0]];
+    const t = (f.x - w.a[0]) * n[0] + (f.z - w.a[1]) * n[1];
+    // the face the plate looks out of: its front points away from the wall
+    const side = front[0] * n[0] + front[1] * n[1] >= 0 ? 1 : -1;
+    if (Math.abs(front[0] * n[0] + front[1] * n[1]) < 0.5) continue;
+    const face = side > 0 ? w.left : -w.right;
+    const inside = t > -w.right - 1e-4 && t < w.left + 1e-4;
+    // on that face already (its back on the wall) or buried in the wall
+    const off = Math.abs(t - (face + side * (d / 2)));
+    if (!inside && off > 0.03) continue;
+    if (best && off >= best.off) continue;
+    const px = w.a[0] + u[0] * s;
+    const pz = w.a[1] + u[1] * s;
+    const at = inside ? face + side * (d / 2) : t;
+    const top = w.slope ? slopeTop(w.slope, f.x, f.z) : Math.min(floorHeight, w.height ?? floorHeight);
+    best = { x: px + n[0] * at, z: pz + n[1] * at, top, off };
+  }
+  if (!best) return { x: f.x, z: f.z, y: base };
+  const y = f.mount_y == null ? Math.max(0.02, Math.min(base, best.top - 0.1, best.top - f.h - 0.02)) : base;
+  return { x: best.x, z: best.z, y };
 }

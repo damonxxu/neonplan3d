@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BufferGeometry } from "three";
-import type { Floor, Room, RoofSection } from "./model.ts";
+import type { Floor, Opening, Room, RoofSection } from "./model.ts";
 import { newFloor } from "./model.ts";
-import { headroomLines, ROOF_THICK, roofUnderAt } from "./roof-sections.ts";
+import { activeSections, dormerRise, headroomLines, proposeDormer, ROOF_THICK, roofUnderAt, sectionAbove, sectionCutsBelow } from "./roof-sections.ts";
 import { buildFloorGeometry } from "./viewer/build.ts";
 
 function rect(id: string, x0: number, z0: number, x1: number, z1: number): Room {
@@ -31,6 +31,20 @@ test("the roof's underside follows the section's profile, minus the slab", () =>
   assert.equal(roofUnderAt(building, 20, 20), null);
   // a canopy does not count
   assert.equal(roofUnderAt({ settings: { roof: { ...building.settings.roof, sections: [{ ...section, open: true }] } } }, 4, 3), null);
+});
+
+test("an overhang set by hand covers what stands under it: walls there end under the roof (#921)", () => {
+  const tan40 = Math.tan((40 * Math.PI) / 180);
+  // side b (z > 6.24) with 1.5 m by hand, the gable end u1 (x > 8.24) with 1 m; the others automatic
+  const wide = { settings: { roof: { ...building.settings.roof, sections: [{ ...section, overhang_sides: [null, 1.5, null, 1] }] } } };
+  // 1 m out on side b the eave has come down by tan(40°)
+  assert.ok(Math.abs(roofUnderAt(wide, 4, 7.24)! - (3.7 - tan40 - ROOF_THICK)) < 1e-9);
+  // beyond the gable end, under its 1 m: the profile across goes on
+  assert.ok(roofUnderAt(wide, 8.9, 3) !== null);
+  // past the overhang, and on the automatic sides: no roof, as before
+  assert.equal(roofUnderAt(wide, 4, 7.9), null);
+  assert.equal(roofUnderAt(wide, 4, -0.5), null);
+  assert.equal(roofUnderAt(building, 4, 7.24), null, "without a hand-set side nothing changes");
 });
 
 test("an attic floor's walls end under the slope: knee walls at the eaves, gables up to the ridge", () => {
@@ -84,4 +98,151 @@ test("headroom lines run along the ridge where the slope leaves 1.5 m", () => {
   }
   // a flat section has no slope and no line
   assert.equal(headroomLines({ settings: { roof: { ...building.settings.roof, sections: [{ ...section, shape: "flat" }] } } }, 2.75, 1.5).length, 0);
+});
+
+test("a lower storey's roof under an upper floor does not cut that floor's walls (#621)", () => {
+  // the reporter's plan: a narrow gable strip at the ground floor's eave height (2.66 m), its ridge only
+  // poking a few centimetres through the upper floor's slab at 2.81 m
+  const low: RoofSection = { id: "low", x0: 2.13, z0: 4.883, x1: 11.4, z1: 6.155, shape: "gable", axis: "x", eave_a: 2.66, eave_b: 2.66, pitch_a: 22, pitch_b: 22, base: 2.66 };
+  const b = { settings: { roof: { type: "custom" as const, pitch: 22, overhang: 0.05, sections: [low] } } };
+  const level = 2.81;
+  // it would cut below the upper floor's ceiling …
+  assert.ok(sectionCutsBelow(low, level + 2.51));
+  // … but its underside never rises above that floor, so it is no ceiling there
+  assert.equal(sectionAbove(low, level), false);
+  assert.equal(roofUnderAt(b, 11.39, 5.58, level), null);
+  // without a floor level (and for the ground floor) it still counts
+  assert.ok(roofUnderAt(b, 11.39, 5.58) !== null);
+  assert.equal(sectionAbove(low, 0), true);
+  // an attic roof whose eave lies below the attic floor still is its ceiling
+  assert.equal(sectionAbove(section, 3.8), true);
+  assert.ok(roofUnderAt(building, 4, 3, 3.8) !== null);
+});
+
+test("sections switched off (a single gable roof again) no longer cut the walls (#621)", () => {
+  // the reporter's plan: roof type "gable" with the sections of an earlier custom roof still stored
+  const off = { settings: { roof: { ...building.settings.roof, type: "gable" as const } } };
+  assert.equal(activeSections(off).length, 0);
+  assert.equal(roofUnderAt(off, 4, 3), null);
+  assert.equal(headroomLines(off, 2.75, 1.5).length, 0);
+  assert.equal(activeSections(building).length, 1);
+  assert.ok(roofUnderAt(building, 4, 3) !== null);
+});
+
+test("a loft wider than the half-hip above it leaves no wall stub standing out of the roof (#638)", () => {
+  // half-hip over 7.5 × 10 m, eaves at 3.31 m, 45°, 0.7 m overhang; the loft floor at 5.32 m reaches the gables
+  const halfhip: RoofSection = { id: "h", x0: -0.24, z0: -0.24, x1: 7.74, z1: 10.24, shape: "halfhip", axis: "z", eave_a: 3.31, eave_b: 3.31, pitch_a: 45, pitch_b: 45, base: 3.31, overhang: 0.7 };
+  const b = { settings: { roof: { type: "custom" as const, pitch: 45, overhang: 0.7, sections: [halfhip] } } };
+  const floor: Floor = { ...newFloor("sb", "Loft", 5.32), height: 1.88, rooms: [rect("l", 1.6, 0, 5.9, 10)] };
+  const under = (x: number, z: number) => {
+    const y = roofUnderAt(b, x, z);
+    return y === null ? null : y - floor.elevation;
+  };
+  const geo = buildFloorGeometry(floor, 0.24, 0.12, [], [], under);
+  const p = geo.walls.getAttribute("position");
+  let worst = -Infinity;
+  for (let i = 0; i < p.count; i++) {
+    const r = roofUnderAt(b, p.getX(i), p.getZ(i));
+    // above the roof's top face (its underside plus the slab) a wall would show outside
+    if (r !== null) worst = Math.max(worst, p.getY(i) + floor.elevation - (r + ROOF_THICK));
+  }
+  assert.ok(worst < 0.005, `a wall stands ${worst.toFixed(3)} m out of the roof`);
+  // the walls under the ridge are still there
+  assert.ok(maxY(geo.walls, (x, z) => x > 3.5 && x < 4 && z < 0.1) > 0.5, "gable wall under the ridge");
+});
+
+test("a high attic floor's wall along the eaves is cut where the slope passes through its thickness (#855)", () => {
+  // the attic room starts 2.23 m in from the eave of a 45° roof, on a floor at 5.3 m: at its outer face the
+  // roof's underside lies 15 cm below the floor, at its inner face 9 cm above it
+  const steep: RoofSection = { ...section, pitch_a: 45, pitch_b: 45, eave_a: 3.3, eave_b: 3.3, base: 3.3, z0: -0.1, z1: 8.1, x0: -0.24, x1: 8.24, axis: "x" };
+  const b = { settings: { roof: { type: "custom" as const, pitch: 45, overhang: 0.4, sections: [steep] } } };
+  const floor: Floor = { ...newFloor("db", "DB", 5.3), height: 1.9, rooms: [rect("a", 0.5, 2.13, 7.5, 5.87)] };
+  const under = (x: number, z: number) => {
+    const y = roofUnderAt(b, x, z);
+    return y === null ? null : y - floor.elevation;
+  };
+  const geo = buildFloorGeometry(floor, 0.24, 0.12, [], [], under);
+  const p = geo.walls.getAttribute("position");
+  let worst = Infinity;
+  for (let i = 0; i < p.count; i++) {
+    const r = under(p.getX(i), p.getZ(i));
+    if (r !== null) worst = Math.min(worst, r);
+  }
+  // no corner of a wall stands where the roof's underside lies deeper than the buried depth (6 cm below the floor)
+  assert.ok(worst >= -0.06 - 1e-6, `a wall corner where the roof lies ${worst.toFixed(3)} m below the floor`);
+  // the walls along the eaves are still there, cut to the slope
+  assert.ok(maxY(geo.walls, (x, z) => z < 2.2 && x > 2 && x < 6) > 0.04, "the eave wall is kept");
+});
+
+/** The wall vertices of a geometry as [x, y, z]. */
+function vertices(g: BufferGeometry): [number, number, number][] {
+  const p = g.getAttribute("position");
+  return Array.from({ length: p.count }, (_, i): [number, number, number] => [p.getX(i), p.getY(i), p.getZ(i)]);
+}
+
+test("the roof opens right at a dormer's edge, and a wall meeting it steps up there instead of slanting (#1145)", () => {
+  const tan40 = Math.tan((40 * Math.PI) / 180);
+  const dormer = proposeDormer(section, "a", "d", 4);
+  const b = { settings: { roof: { ...building.settings.roof, sections: [section, dormer] } } };
+  const main = 3.7 + (0.1 + 0.24) * tan40 - ROOF_THICK;
+  // a centimetre outside the dormer the main slope is the ceiling, a centimetre inside the dormer's roof
+  assert.ok(Math.abs(roofUnderAt(b, dormer.x0 - 0.01, 0.1)! - main) < 1e-9);
+  assert.ok(roofUnderAt(b, dormer.x0 + 0.01, 0.1)! > main + 1);
+  assert.ok(Math.abs(roofUnderAt(b, dormer.x1 + 0.01, 0.1)! - main) < 1e-9);
+  // the #1051 rule still holds for a roof that is not a dormer on the covering slope (see roof-sections.test.ts)
+  const floor: Floor = { ...newFloor("og", "OG", 2.75), height: 2.5, rooms: [rect("a", 0, 0, 8, 6)] };
+  const under = (x: number, z: number) => {
+    const y = roofUnderAt(b, x, z, floor.elevation);
+    return y === null ? null : y - floor.elevation;
+  };
+  const geo = buildFloorGeometry(floor, 0.24, 0.12, [], [], under);
+  // the eave wall (z from -0.24 to 0) left of the dormer's middle: its low top under the slope reaches the dormer's
+  // edge, its high top under the dormer starts there – a straight step, not a top slanting over 30 cm
+  const left = vertices(geo.walls).filter(([x, , z]) => z <= 1e-6 && x > 1 && x < (dormer.x0 + dormer.x1) / 2);
+  const low = left.filter(([, y]) => y > 0.7 && y < 1.05).map(([x]) => x);
+  const high = left.filter(([, y]) => y > 2).map(([x]) => x);
+  assert.ok(low.length && high.length);
+  assert.ok(Math.abs(Math.max(...low) - dormer.x0) < 1e-3, `low top ends at ${Math.max(...low)}, dormer at ${dormer.x0}`);
+  assert.ok(Math.abs(Math.min(...high) - dormer.x0) < 1e-3, `high top starts at ${Math.min(...high)}, dormer at ${dormer.x0}`);
+  // its top edge line steps straight up as well
+  const p = geo.lines.getAttribute("position");
+  let slanted = 0;
+  for (let i = 0; i < p.count; i += 2) {
+    const [x0, y0, x1, y1] = [p.getX(i), p.getY(i), p.getX(i + 1), p.getY(i + 1)];
+    if (p.getZ(i) > 1e-6 || Math.min(x0, x1) < dormer.x0 - 0.35 || Math.max(x0, x1) > dormer.x0 + 0.35) continue;
+    if (Math.abs(y1 - y0) > 0.5 && Math.abs(x1 - x0) > 1e-3) slanted++;
+  }
+  assert.equal(slanted, 0, "no top line slants across the dormer's edge");
+});
+
+test("a wall under a dormer whose front starts above the floor's height rises to it: the window under it fits (#1156)", () => {
+  // the dormer's walls start at 5.6 m, above the floor's walls (2.75 + 2.5 = 5.25 m); its eaves at 6 m
+  const dormer = { ...proposeDormer(section, "a", "d", 4), base: 5.6, eave_a: 6, eave_b: 6 };
+  const b = { settings: { roof: { ...building.settings.roof, sections: [section, dormer] } } };
+  const mid = (dormer.x0 + dormer.x1) / 2;
+  const window: Opening = { id: "w", room_id: "a", edge: 0, offset: mid, width: 0.8, type: "window", sill: 1.6, height: 1, hinge: "left", leaves: 1, swing: "in", cover: null, contact: null, contact2: null, tilt: null };
+  const floor: Floor = { ...newFloor("og", "OG", 2.75), height: 2.5, rooms: [rect("a", 0, 0, 8, 6)], openings: [window] };
+  const under = (x: number, z: number) => {
+    const y = roofUnderAt(b, x, z, floor.elevation);
+    return y === null ? null : y - floor.elevation;
+  };
+  const rise = dormerRise(b, floor.elevation)!;
+  const roofRise = (x: number, z: number, top: number) => {
+    const y = rise(x, z, top);
+    return y === null ? null : y - floor.elevation;
+  };
+  const start = 5.6 - ROOF_THICK - floor.elevation;
+  // before: the wall ended at the floor's height and cut the window's top off
+  const plain = buildFloorGeometry(floor, 0.24, 0.12, [], [], under);
+  assert.ok(plain.openings[0].top < 2.5);
+  const geo = buildFloorGeometry(floor, 0.24, 0.12, [], [], under, null, roofRise);
+  assert.ok(Math.abs(geo.openings[0].top - 2.6) < 1e-9, `window top ${geo.openings[0].top}`);
+  // the wall under the dormer goes up to where the dormer's front starts, beside it the slope still cuts it
+  assert.ok(Math.abs(maxY(geo.walls, (x, z) => z < 0 && Math.abs(x - mid) < 0.5) - start) < 1e-6);
+  assert.ok(maxY(geo.walls, (x, z) => z < 0 && x > 0.5 && x < dormer.x0 - 0.1) < 1.1);
+  // a floor whose walls the slope does not reach there (below the roof), or a point beside the dormer: no rise
+  assert.equal(dormerRise(b, 0)!(mid, -0.1, 2.75), null);
+  assert.equal(rise(dormer.x0 - 0.1, -0.1, 2.5), null);
+  // a dormer whose walls start below the floor's top changes nothing
+  assert.equal(dormerRise({ settings: { roof: { ...b.settings.roof, sections: [section, { ...dormer, base: 3.7 }] } } }, floor.elevation)!(mid, -0.1, 2.5), null);
 });

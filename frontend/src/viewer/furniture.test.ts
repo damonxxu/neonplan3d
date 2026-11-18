@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Furniture } from "../model.ts";
-import { mountBase, setPacks, type FurniturePack } from "../packs.ts";
+import { mountBase, packItem, setPacks, type FurniturePack } from "../packs.ts";
+import { liveKey } from "../live-parts.ts";
 import { newFloor } from "../model.ts";
-import { packMotionParts, pushFurniture } from "./furniture.ts";
+import { Color } from "three";
+import { finishSafe, hasFixedColors, packGlowCentre, packMotionParts, pushFurniture, pushPackLamp, pushPackLive, pushPackSpin, screenPictureSize, setLightLook } from "./furniture.ts";
 import { packMotion, type PackItem } from "../packs.ts";
 import { GeoBuffer, LineBuffer } from "./geo.ts";
 
@@ -190,4 +192,361 @@ test("a motorised curtain opens to both ends and a roll-down screen rolls up wit
   // half up: the cloth is half as long and still hangs from the top
   const half = packMotionParts(screen, "screen", 0.5);
   assert.ok(Math.abs(half[0].y + half[0].h - 0.92) < 1e-9 && Math.abs(half[0].h - 0.425) < 1e-9);
+});
+
+test("pack parts in a colour of their own keep it down to the ground in the light looks (#609)", () => {
+  const pumpkin: FurniturePack = {
+    id: "t.fun",
+    name: "Fun",
+    publisher: "t",
+    licensee: null,
+    items: [
+      {
+        id: "pumpkin",
+        name: { de: "Kürbis", en: "Pumpkin" },
+        size: [0.4, 0.4, 0.4],
+        parts: [
+          { shape: "loft", x: 0, z: 0, w: 0.6, d: 0.6, y: 0, h: 0.5, color: "#c4500a", tx: 0, tz: 0, tw: 1, td: 1 },
+          { shape: "box", x: 0, z: 0, w: 0.4, d: 0.4, y: 0.5, h: 0.5, color: "dark" },
+        ],
+      },
+    ],
+  };
+  setPacks([pumpkin]);
+  assert.ok(hasFixedColors("pack:t.fun:pumpkin"));
+  assert.ok(!hasFixedColors("pack:t.cars:wedge") && !hasFixedColors("sofa"));
+  const f: Furniture = { id: "p", type: "pack:t.fun:pumpkin", x: 0, z: 0, rotation: 0, w: 0.4, d: 0.4, h: 0.4, variant: null, entity: null, power: null };
+  const colours = (light: boolean) => {
+    setLightLook(light);
+    const buf = new GeoBuffer();
+    pushFurniture(buf, new LineBuffer(), new GeoBuffer(), f);
+    setLightLook(false);
+    const out: number[][] = [];
+    for (let i = 0; i + 2 < buf.c.length; i += 3) out.push([buf.c[i], buf.c[i + 1], buf.c[i + 2]]);
+    return out;
+  };
+  // the looks keep a colour that is bright (> 0.45) and strong (saturation > 0.45)
+  const kept = (c: number[]) => {
+    const mx = Math.max(...c);
+    return mx > 0.45 && (mx - Math.min(...c)) / mx > 0.45;
+  };
+  const orange = (c: number[]) => c[0] > c[1] * 1.5 && c[0] > c[2] * 3;
+  const neon = colours(false).filter(orange);
+  const light = colours(true).filter(orange);
+  assert.ok(neon.some((c) => !kept(c)), "in neon the shading darkens the lower part");
+  assert.ok(light.length > 0 && light.every(kept), "in the light looks every orange vertex stays a signal colour");
+  // the neon look is unchanged
+  assert.deepEqual(colours(false), colours(false));
+});
+
+test("a pack wall lamp's light sits in its glowing parts, turned and mirrored with it (#680)", () => {
+  // a wall lantern 0.2 wide, 0.24 deep, 0.4 tall: a back plate at the wall (-z), the glass box out front, a small LED
+  const lantern = {
+    id: "lantern",
+    name: { de: "Laterne", en: "Lantern" },
+    size: [0.2, 0.24, 0.4],
+    parts: [
+      { shape: "box", x: 0, z: -0.45, w: 1, d: 0.1, y: 0, h: 1, color: "body" },
+      { shape: "box", x: 0.1, z: 0.2, w: 0.6, d: 0.5, y: 0.25, h: 0.5, color: "glass", glow: true },
+    ],
+  } as unknown as PackItem;
+  const f = { x: 2, z: 1, rotation: 0, w: 0.2, d: 0.24, h: 0.4, mirror: false };
+  const near = (a: number[] | null, b: number[]) => !!a && a.every((v, i) => Math.abs(v - b[i]) < 1e-9);
+  // the glass's centre: 0.1 × 0.2 to the side, 0.2 × 0.24 out from the middle, halfway up the glass above the mount
+  assert.ok(near(packGlowCentre(lantern, f, 1.8), [2.02, 1.8 + 0.2, 1.048]), String(packGlowCentre(lantern, f, 1.8)));
+  // mirrored: the side offset changes sides; turned by 90°: the depth points along -x
+  assert.ok(near(packGlowCentre(lantern, { ...f, mirror: true }, 1.8), [1.98, 2, 1.048]));
+  assert.ok(near(packGlowCentre(lantern, { ...f, rotation: 90 }, 1.8), [2 - 0.048, 2, 1.02]));
+  // no glowing part: null (the lamp keeps its old halo and light)
+  assert.equal(packGlowCentre({ ...lantern, parts: [lantern.parts[0]] } as PackItem, f, 1.8), null);
+});
+
+test("round things cast a round shadow, lying on the ground they stand on (#719, #708)", async () => {
+  const { pushFurniture, roundFootprint } = await import("./furniture.ts");
+  const { GeoBuffer, LineBuffer } = await import("./geo.ts");
+  const part = { shape: "cyl" as const, x: 0, z: 0, w: 1, d: 1, y: 0, h: 0.2, color: "wood" };
+  setPacks([{ id: "g", name: "G", publisher: "G", licensee: null, items: [{ id: "trampoline", name: { en: "Trampoline" }, size: [3, 3, 0.9], parts: [part] }, { id: "box", name: { en: "Box" }, size: [1, 1, 1], parts: [{ ...part, shape: "box" }] }] } as FurniturePack]);
+  try {
+    assert.equal(roundFootprint({ type: "pack:g:trampoline" }), true);
+    assert.equal(roundFootprint({ type: "pack:g:box" }), false);
+    assert.equal(roundFootprint({ type: "table_round" }), true);
+    assert.equal(roundFootprint({ type: "sofa" }), false);
+    // the shadow of an item on a lawn 0.55 m below the floor lies on that lawn
+    const shadow = new GeoBuffer();
+    const f = { id: "t", type: "pack:g:trampoline", x: 0, z: 0, w: 3, d: 3, h: 0.9, rotation: 0, variant: null } as Furniture;
+    pushFurniture(new GeoBuffer(), new LineBuffer(), shadow, f, -0.55);
+    const ys = new Set<number>();
+    for (let i = 1; i < shadow.p.length; i += 3) ys.add(Math.round(shadow.p[i] * 1000) / 1000);
+    assert.deepEqual([...ys], [-0.547]);
+    // round: many more corners than a square's
+    assert.ok(shadow.p.length / 9 > 40);
+  } finally {
+    setPacks([]);
+  }
+});
+
+test("a cover fills a small smart display, not just a sliver; a TV keeps its 4 cm margin (#799)", () => {
+  // a 5″ display: 11 × 6.5 cm, a square cover
+  const small = screenPictureSize(0.11, 0.065, 1);
+  assert.ok(small.h > 0.055, `cover only ${small.h} m high`);
+  assert.ok(small.w <= 0.11 && small.h <= 0.065);
+  // a 55″ TV with a 16:9 picture: 4 cm off its height
+  const tv = screenPictureSize(1.21, 0.68, 16 / 9);
+  assert.ok(Math.abs(tv.h - 0.64) < 1e-9);
+});
+
+test("fan blades of a pack turn as a model of their own about their middle (#1084)", () => {
+  const blade = (x: number, z: number, rot: number) => ({ shape: "box" as const, x, z, w: 0.38, d: 0.09, y: 0.375, h: 0.04, color: "wood", rot, spin: "y" as const });
+  const item: PackItem = {
+    id: "fan",
+    name: { en: "Fan" },
+    size: [1.3, 1.3, 0.4],
+    mount: "ceiling",
+    parts: [{ shape: "cyl", x: 0, z: 0, w: 0.17, d: 0.17, y: 0.3, h: 0.2, color: "dark" }, blade(0.28, 0, 0), blade(-0.14, 0.24, 120), blade(-0.14, -0.24, 240)],
+  } as PackItem;
+  setPacks([{ id: "t", name: "T", items: [item] } as unknown as FurniturePack]);
+  const buf = new GeoBuffer();
+  const spin = pushPackSpin(buf, item, 1.3, 1.3, 0.4);
+  assert.ok(spin);
+  assert.equal(spin.axis, "y");
+  // the pivot is the hub: the blades' middle, at their height
+  assert.ok(Math.abs(spin.pivot[0]) < 1e-9 && Math.abs(spin.pivot[2]) < 1e-9);
+  assert.ok(Math.abs(spin.pivot[1] - (0.375 + 0.02) * 0.4) < 1e-9);
+  assert.ok(buf.count > 0);
+  // the item itself leaves the blades out; its picture keeps them
+  const f: Furniture = { id: "f", type: "pack:t:fan", x: 0, z: 0, rotation: 0, w: 1.3, d: 1.3, h: 0.4, variant: null, entity: null, power: null };
+  const count = (still: boolean) => {
+    const b = new GeoBuffer();
+    pushFurniture(b, new LineBuffer(), new GeoBuffer(), f, 0, still);
+    return b.count;
+  };
+  assert.ok(count(true) > count(false));
+  setPacks([]);
+});
+
+test("a finish colours a sofa's fabric in the homely styles only, and live parts are left to the viewer", async () => {
+  const { setNaturalPalette } = await import("./palette.ts");
+  const sofa = (finish: Furniture["finish"]) => {
+    const buf = new GeoBuffer();
+    pushFurniture(buf, new LineBuffer(), new GeoBuffer(), { id: "s", type: "sofa", x: 0, z: 0, rotation: 0, w: 2, d: 0.9, h: 0.8, variant: null, finish } as Furniture);
+    return buf.c;
+  };
+  // blue fabric (#4a6a9a, linear colours): blue far over red somewhere; the natural grey fabric (#8e97a5) is almost even
+  const hasBlue = (c: number[]) => {
+    for (let i = 0; i < c.length; i += 3) if (c[i + 2] > 0.08 && c[i + 2] > c[i] * 2.5) return true;
+    return false;
+  };
+  setNaturalPalette(true);
+  try {
+    assert.equal(hasBlue(sofa({ fabric: "#4a6a9a" })), true);
+    assert.equal(hasBlue(sofa(null)), false);
+  } finally {
+    setNaturalPalette(false);
+  }
+  assert.deepEqual(sofa({ fabric: "#4a6a9a" }), sofa(null), "the neon looks keep their own colours");
+  // a pack item with a live door: the door is not in the item's model while the viewer draws it
+  setPacks([{ id: "t.live", name: "Live", publisher: "t", licensee: null, items: [{ id: "cab", name: { en: "Cab" }, size: [1, 0.5, 1], parts: [{ shape: "box", x: 0, z: 0, w: 1, d: 0.5, y: 0, h: 1, color: "body" }, { shape: "box", x: 0, z: 0.24, w: 0.9, d: 0.02, y: 0.05, h: 0.9, color: "white", edges: "faint", bind: { slot: "door", kind: "open" } }] }] }]);
+  const count = (still: boolean) => {
+    const buf = new GeoBuffer();
+    pushFurniture(buf, new LineBuffer(), new GeoBuffer(), { id: "c", type: "pack:t.live:cab", x: 0, z: 0, rotation: 0, w: 1, d: 0.5, h: 1, variant: null } as Furniture, 0, still);
+    return buf.p.length;
+  };
+  assert.ok(count(true) > count(false), "a picture keeps the door, the house model leaves it to the viewer");
+  // the live door takes the item's finish too (a sage front stays sage when the door is its own model)
+  const door = (finish: Furniture["finish"]) => {
+    const buf = new GeoBuffer();
+    pushPackLive(buf, packItem("pack:t.live:cab")!, 1, 0.5, 1, liveKey({ slot: "door", kind: "open" }), { finish });
+    return buf.c;
+  };
+  setNaturalPalette(true);
+  try {
+    assert.notDeepEqual(door({ front: "#5d7590" }), door(null));
+  } finally {
+    setNaturalPalette(false);
+  }
+  // its edges come along (a neon door keeps its outline when it opens)
+  const lines = new LineBuffer();
+  pushPackLive(new GeoBuffer(), packItem("pack:t.live:cab")!, 1, 0.5, 1, liveKey({ slot: "door", kind: "open" }), {}, lines);
+  assert.ok(lines.p.length > 0);
+});
+
+test("a wood finish colours a pack worktop's top too, not only its front edge (#1143)", async () => {
+  const { setNaturalPalette } = await import("./palette.ts");
+  setPacks([{ id: "t.kit", name: "Kit", publisher: "t", licensee: null, items: [{ id: "dw", name: { en: "Dishwasher" }, size: [0.6, 0.6, 0.9], parts: [{ shape: "box", x: 0, z: 0, w: 1, d: 1, y: 0, h: 0.95, color: "white" }, { shape: "box", x: 0, z: 0, w: 1, d: 1, y: 0.95, h: 0.05, color: "wood", top: "#1d2640" }] }] }]);
+  // the colours of the worktop's top face (y = 0.9)
+  const top = (finish: Furniture["finish"]) => {
+    const buf = new GeoBuffer();
+    pushFurniture(buf, new LineBuffer(), new GeoBuffer(), { id: "d", type: "pack:t.kit:dw", x: 0, z: 0, rotation: 0, w: 0.6, d: 0.6, h: 0.9, variant: null, finish } as Furniture);
+    const out: number[][] = [];
+    // whole triangles at that height: the side faces end there too
+    for (let i = 0; i < buf.p.length; i += 9) if ([1, 4, 7].every((k) => Math.abs(buf.p[i + k] - 0.9) < 1e-6)) out.push(buf.c.slice(i, i + 3));
+    return out;
+  };
+  setNaturalPalette(true);
+  try {
+    // without a finish the top keeps the pack's own dark blue; walnut makes it warm (red over blue)
+    assert.ok(top(null).every(([r, , b]) => b > r));
+    assert.ok(top({ wood: "#6b4a32" }).every(([r, , b]) => r > b));
+    // a front finish alone leaves the worktop as it is
+    assert.deepEqual(top({ front: "#5d7590" }), top(null));
+  } finally {
+    setNaturalPalette(false);
+    setPacks([]);
+  }
+});
+
+test("fronts and carcass: a pack's front parts look like white ones until a carcass finish tells them apart (#1177)", async () => {
+  const { setNaturalPalette } = await import("./palette.ts");
+  const parts = (front: string) =>
+    [
+      { shape: "box", x: 0, z: -0.02, w: 1, d: 0.96, y: 0, h: 1, color: "white", edges: true },
+      { shape: "box", x: 0, z: 0.49, w: 0.98, d: 0.02, y: 0.05, h: 0.9, color: front, top: front, edges: "faint" },
+    ] as PackItem["parts"];
+  setPacks([{ id: "t.fr", name: "Fronts", publisher: "t", licensee: null, items: [{ id: "old", name: { en: "Old" }, size: [0.6, 0.6, 0.8], parts: parts("white") }, { id: "new", name: { en: "New" }, size: [0.6, 0.6, 0.8], parts: parts("front") }] }]);
+  const draw = (id: string, finish: Furniture["finish"]) => {
+    const buf = new GeoBuffer();
+    pushFurniture(buf, new LineBuffer(), new GeoBuffer(), { id: "c", type: `pack:t.fr:${id}`, x: 0, z: 0, rotation: 0, w: 0.6, d: 0.6, h: 0.8, variant: null, finish } as Furniture);
+    return buf.c;
+  };
+  // the carcass' colours come first (its sides and its top), the front's after them
+  const split = (c: number[]) => c.length / 2;
+  const carcass = (c: number[]) => c.slice(0, split(c));
+  const front = (c: number[]) => c.slice(split(c));
+  try {
+    for (const natural of [false, true]) {
+      setNaturalPalette(natural);
+      // without a finish, and with a front finish alone (every plan before 3.5), the new role looks like the old one
+      assert.deepEqual(draw("new", null), draw("old", null));
+      assert.deepEqual(draw("new", { front: "#9fae96" }), draw("old", { front: "#9fae96" }));
+    }
+    setNaturalPalette(true);
+    // the front finish colours the carcass too while no carcass finish is set
+    assert.notDeepEqual(carcass(draw("new", { front: "#9fae96" })), carcass(draw("new", null)));
+    // a carcass finish takes the carcass over; the fronts keep the front finish
+    const both = draw("new", { front: "#9fae96", body: "#34363a" });
+    assert.deepEqual(front(both), front(draw("new", { front: "#9fae96" })));
+    assert.deepEqual(carcass(both), carcass(draw("new", { front: "#34363a" })));
+    // a carcass alone leaves the fronts as the look draws them
+    assert.deepEqual(front(draw("new", { body: "#34363a" })), front(draw("new", null)));
+    // an older pack (white fronts) colours fronts and carcass with the carcass finish then: one colour, as before
+    assert.deepEqual(draw("old", { body: "#34363a" }), draw("old", { front: "#34363a" }));
+  } finally {
+    setNaturalPalette(false);
+    setPacks([]);
+  }
+});
+
+test("a part in a colour of its own keeps it until the item gets the finish it follows (#1175)", async () => {
+  const { setNaturalPalette } = await import("./palette.ts");
+  const chair = (finish?: "fabric") =>
+    [
+      { shape: "box", x: 0, z: 0, w: 1, d: 1, y: 0, h: 0.4, color: "dark" },
+      { shape: "box", x: 0, z: 0, w: 0.8, d: 0.8, y: 0.4, h: 0.1, color: "#8a1f2e", top: "#a8283a", ...(finish ? { finish } : {}) },
+    ] as PackItem["parts"];
+  setPacks([{ id: "t.ch", name: "Chairs", publisher: "t", licensee: null, items: [{ id: "old", name: { en: "Old" }, size: [0.7, 0.7, 1], parts: chair() }, { id: "new", name: { en: "New" }, size: [0.7, 0.7, 1], parts: chair("fabric") }] }]);
+  const draw = (id: string, finish: Furniture["finish"]) => {
+    const buf = new GeoBuffer();
+    pushFurniture(buf, new LineBuffer(), new GeoBuffer(), { id: "c", type: `pack:t.ch:${id}`, x: 0, z: 0, rotation: 0, w: 0.7, d: 0.7, h: 1, variant: null, finish } as Furniture);
+    return buf.c;
+  };
+  // the cover's colours: red far over blue while it keeps its own
+  const red = (c: number[]) => {
+    // after the frame: a box on the floor has no bottom face, 10 triangles
+    const cover = c.slice(10 * 9);
+    for (let i = 0; i < cover.length; i += 3) if (!(cover[i] > cover[i + 2] * 3)) return false;
+    return true;
+  };
+  try {
+    for (const natural of [false, true]) {
+      setNaturalPalette(natural);
+      assert.deepEqual(draw("new", null), draw("old", null));
+      // another finish leaves it alone
+      assert.deepEqual(draw("new", { wood: "#6b4a32" }), draw("old", { wood: "#6b4a32" }));
+    }
+    setNaturalPalette(true);
+    assert.equal(red(draw("new", null)), true);
+    assert.equal(red(draw("new", { fabric: "#5d7d5a" })), false);
+    // the old part without its finish stays red
+    assert.equal(red(draw("old", { fabric: "#5d7d5a" })), true);
+    // in the light looks the coloured cover is not lifted like a fixed colour
+    setLightLook(true);
+    assert.equal(red(draw("new", { fabric: "#5d7d5a" })), false);
+  } finally {
+    setLightLook(false);
+    setNaturalPalette(false);
+    setPacks([]);
+  }
+});
+
+test("a pack lamp's body takes the finish, its glowing parts keep the light (#1175)", async () => {
+  const { setNaturalPalette } = await import("./palette.ts");
+  const item = {
+    id: "panel",
+    name: { en: "Panel" },
+    size: [0.5, 0.5, 0.06],
+    mount: "ceiling",
+    light: "panel",
+    parts: [
+      { shape: "cyl", x: 0, z: 0, w: 1, d: 1, y: 0.5, h: 0.5, color: "white", edges: true },
+      { shape: "cyl", x: 0, z: 0, w: 0.88, d: 0.88, y: 0, h: 0.5, color: "white", glow: true },
+    ],
+  } as PackItem;
+  const lamp = (finish: Furniture["finish"]) => {
+    const buf = new GeoBuffer();
+    pushPackLamp(buf, item, { x: 0, z: 0, rotation: 0, w: 0.5, d: 0.5, h: 0.06, finish }, 2.4, 0xff00ff);
+    return buf.c;
+  };
+  // vertices in the glow colour (magenta)
+  const glowing = (c: number[]) => {
+    let n = 0;
+    for (let i = 0; i < c.length; i += 3) if (c[i] > 0.9 && c[i + 1] < 0.05 && c[i + 2] > 0.9) n++;
+    return n;
+  };
+  setNaturalPalette(true);
+  try {
+    const plain = lamp(null);
+    const sage = lamp({ front: "#9fae96" });
+    assert.notDeepEqual(sage, plain);
+    // the glowing disc keeps the glow colour
+    assert.ok(glowing(plain) > 0);
+    assert.equal(glowing(sage), glowing(plain));
+  } finally {
+    setNaturalPalette(false);
+  }
+  assert.deepEqual(lamp({ front: "#9fae96" }), lamp(null), "the neon looks keep their own colours");
+});
+
+test("a finish colour stays out of the homely styles' grey for neon leftovers (#1175)", () => {
+  // the shader turns dark colours with blue far over red and green grey (theme.ts)
+  const greyed = (hex: number, k: number) => {
+    const c = new Color(hex).multiplyScalar(k);
+    return Math.max(c.r, c.g, c.b) < 0.2 && c.b > c.r * 2 && c.b > c.g * 1.5;
+  };
+  // the blue front swatch fell into it on faces shaded towards the floor; now it never does, and barely moves
+  assert.equal(greyed(0x5d7590, 0.6), true);
+  const safe = finishSafe(0x5d7590)!;
+  for (let k = 0.3; k <= 1.3; k += 0.05) assert.equal(greyed(safe, k), false);
+  const hsl = (hex: number) => new Color(hex).getHSL({ h: 0, s: 0, l: 0 });
+  assert.ok(Math.abs(hsl(0x5d7590).h - hsl(safe).h) < 0.02 && Math.abs(hsl(0x5d7590).l - hsl(safe).l) < 0.02);
+  // the blue fabric too
+  for (let k = 0.3; k <= 1.3; k += 0.05) assert.equal(greyed(finishSafe(0x4a6a9a)!, k), false);
+  // every other colour stays exactly as it is
+  for (const hex of [0x6b4a32, 0x9fae96, 0x34363a, 0xedebe7, 0x8e97a5, 0x4a4f58, 0xa5583a, 0x5b8fe0]) assert.equal(finishSafe(hex), hex);
+  assert.equal(finishSafe(null), null);
+});
+
+test("a built-in worktop takes the wood finish, without one it stays as it was (#1175)", async () => {
+  const { setNaturalPalette } = await import("./palette.ts");
+  const draw = (type: string, finish: Furniture["finish"]) => {
+    const buf = new GeoBuffer();
+    pushFurniture(buf, new LineBuffer(), new GeoBuffer(), { id: "w", type, x: 0, z: 0, rotation: 0, w: 1.2, d: 0.6, h: 0.9, variant: null, finish } as Furniture);
+    return buf.c;
+  };
+  setNaturalPalette(true);
+  try {
+    for (const type of ["worktop", "kitchen", "island"]) assert.notDeepEqual(draw(type, { wood: "#6b4a32" }), draw(type, null), type);
+  } finally {
+    setNaturalPalette(false);
+  }
+  assert.deepEqual(draw("worktop", { wood: "#6b4a32" }), draw("worktop", null));
 });

@@ -2,6 +2,7 @@
 // speech to text, so NeonPlan decides what the sentence means), and handing a sentence to Assist's conversation.
 
 import type { HomeAssistant } from "../types.ts";
+import { withoutHere } from "./commands.ts";
 
 export interface Pipeline {
   id: string;
@@ -80,9 +81,12 @@ export async function transcribe(hass: HomeAssistant, ctx: AudioContext, source:
   };
   // ScriptProcessor: old, but every WebView of an old wall tablet has it (AudioWorklet not)
   const proc = ctx.createScriptProcessor(4096, 1, 1);
+  let peak = 0;
   proc.onaudioprocess = (e) => {
     if (done) return;
-    const pcm = toPcm16(e.inputBuffer.getChannelData(0), ctx.sampleRate);
+    const input = e.inputBuffer.getChannelData(0);
+    for (let i = 0; i < input.length; i += 16) peak = Math.max(peak, Math.abs(input[i]));
+    const pcm = toPcm16(input, ctx.sampleRate);
     if (handler === null) early.push(pcm);
     else send(pcm);
   };
@@ -102,7 +106,9 @@ export async function transcribe(hass: HomeAssistant, ctx: AudioContext, source:
       source.disconnect(proc);
       proc.disconnect();
       void unsub?.();
-      if (err) reject(err);
+      // nothing but silence came in: the microphone is open but gives no sound (another app holds it, #579)
+      if ((err || !text) && peak < 0.0005) reject(new Error("silent"));
+      else if (err) reject(err);
       else resolve(text);
     };
     hass.connection
@@ -137,7 +143,7 @@ let pipelineOf: { connection: unknown; chosen: string | null; id: Promise<string
  * One sentence: the microphone opens, Assist writes it down, the microphone closes again. The pipeline: the one chosen
  * on this device, else Home Assistant's preferred one (also when the list of pipelines cannot be read).
  */
-export async function listenOnce(hass: HomeAssistant, onListening?: () => void, chosen: string | null = null): Promise<string> {
+export async function listenOnce(hass: HomeAssistant, onListening?: () => void, chosen: string | null = null, started?: AudioContext): Promise<string> {
   if (!pipelineOf || pipelineOf.connection !== hass.connection || pipelineOf.chosen !== chosen) {
     // undefined: the list could not be read – the run takes the preferred pipeline then; null: none has speech to text
     pipelineOf = { connection: hass.connection, chosen, id: findPipeline(hass, chosen).then((p) => p?.id ?? null, () => undefined) };
@@ -145,12 +151,20 @@ export async function listenOnce(hass: HomeAssistant, onListening?: () => void, 
   const found = await pipelineOf.id;
   if (found === null) {
     pipelineOf = null;
+    void started?.close();
     throw new Error("no_pipeline");
   }
   if (found === undefined) pipelineOf = null;
   const pipeline = found ?? chosen;
-  const stream = await openMicrophone();
-  const ctx = audioContext();
+  // the audio context made on the tap itself (`started`): one made after the awaits stays mute in Android WebViews (#579)
+  const ctx = started ?? audioContext();
+  let stream: MediaStream;
+  try {
+    stream = await openMicrophone();
+  } catch (err) {
+    void ctx.close();
+    throw err;
+  }
   try {
     const source = ctx.createMediaStreamSource(stream);
     onListening?.();
@@ -161,8 +175,80 @@ export async function listenOnce(hass: HomeAssistant, onListening?: () => void, 
   }
 }
 
-/** Hand a sentence to Assist's conversation ("Licht im Flur an"); its spoken answer as text. */
-export async function converse(hass: HomeAssistant, text: string): Promise<string> {
-  const res = await hass.callWS<{ response?: { speech?: { plain?: { speech?: string } } } }>({ type: "conversation/process", text, language: hass.language });
+/**
+ * Speak a text through the Assist pipeline's text-to-speech on this device (the pipeline chosen here, else the
+ * preferred one). Resolves when the sound starts; false when the pipeline has no speech or the browser will not play.
+ */
+export async function speak(hass: HomeAssistant, text: string, chosen: string | null = null): Promise<boolean> {
+  const pipeline = await findSpeaking(hass, chosen);
+  if (!pipeline) return false;
+  const url = await new Promise<string | null>((resolve) => {
+    let unsub: (() => Promise<void>) | null = null;
+    const stop = setTimeout(() => resolve(null), 15000);
+    const finish = (u: string | null) => {
+      clearTimeout(stop);
+      void unsub?.();
+      resolve(u);
+    };
+    hass.connection
+      .subscribeMessage<{ type: string; data?: { tts_output?: { url?: string } } }>(
+        (ev) => {
+          if (ev.type === "tts-end") finish(ev.data?.tts_output?.url ?? null);
+          else if (ev.type === "error" || ev.type === "run-end") finish(null);
+        },
+        { type: "assist_pipeline/run", start_stage: "tts", end_stage: "tts", input: { text }, pipeline },
+      )
+      .then((u) => (unsub = u))
+      .catch(() => finish(null));
+  });
+  if (!url) return false;
+  try {
+    const audio = new Audio(url.startsWith("http") ? url : new URL(url, location.origin).href);
+    await audio.play();
+    // resolves when the words are spoken (a tour waits for them); never hangs on a stalled stream
+    await new Promise<void>((done) => {
+      const stop = setTimeout(done, 20000);
+      const end = () => {
+        clearTimeout(stop);
+        done();
+      };
+      audio.addEventListener("ended", end, { once: true });
+      audio.addEventListener("error", end, { once: true });
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The pipeline that can speak: the one chosen on this device when it has text-to-speech, else the preferred one that has. */
+async function findSpeaking(hass: HomeAssistant, chosen: string | null): Promise<string | null> {
+  try {
+    const res = await hass.callWS<{ pipelines: (Pipeline & { tts_engine?: string | null })[]; preferred_pipeline: string | null }>({ type: "assist_pipeline/pipeline/list" });
+    const own = chosen ? res.pipelines.find((p) => p.id === chosen && p.tts_engine) : undefined;
+    if (own) return own.id;
+    const preferred = res.pipelines.find((p) => p.id === res.preferred_pipeline);
+    return (preferred?.tts_engine ? preferred : res.pipelines.find((p) => p.tts_engine))?.id ?? null;
+  } catch {
+    return null;
+  }
+}
+
+type Conversed = { response?: { speech?: { plain?: { speech?: string } } } };
+
+/**
+ * Hand a sentence to Assist's conversation ("Licht im Flur an"); its spoken answer as text. `area`: the Home
+ * Assistant area this device hangs in – "Licht an" and "Mach hier das Licht an" switch the lights there.
+ */
+export async function converse(hass: HomeAssistant, text: string, area: string | null = null): Promise<string> {
+  if (area) {
+    try {
+      const res = await hass.callWS<Conversed>({ type: "neonplan3d/voice/converse", text: withoutHere(text, hass.language), area_id: area, language: hass.language });
+      return res.response?.speech?.plain?.speech ?? "";
+    } catch {
+      // an older NeonPlan on the server (or Assist off): the sentence goes to Assist as it was said
+    }
+  }
+  const res = await hass.callWS<Conversed>({ type: "conversation/process", text, language: hass.language });
   return res.response?.speech?.plain?.speech ?? "";
 }

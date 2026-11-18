@@ -23,10 +23,15 @@ export interface HouseholdItem {
 /** A pack item that is a plant: most of its parts are leaves or a pot. */
 export function isPackPlant(type: string): boolean {
   const item = packItem(type);
-  if (!item || item.light) return false;
+  if (!item) return false;
+  // named or tagged as a plant (the Deco pack's plants have leaf colours of their own, #712)
+  if (PLANT_WORDS.test([item.id, ...(item.tags ?? []), ...Object.values(item.name ?? {})].join(" "))) return !item.light || /plant|pflanz/i.test(item.id);
+  if (item.light) return false;
   const green = item.parts.filter((p) => p.color === "plant").length;
   return green > 0 && green + item.parts.filter((p) => p.color === "pot").length >= item.parts.length / 2;
 }
+
+const PLANT_WORDS = /plant|pflanz|palm|monstera|ficus|feige|\bfig\b|fig_|bonsai|kaktus|cactus|yucca|orchid|bambus|bamboo|bogenhanf|snake_|einblatt|lily|gummibaum|rubber|olive|kräuter|\bherb|\bfarn|\bfern\b|\befeu\b|\bivy\b|blumen|flower|tulp|tulip/i;
 
 export const BIN_SHAPES = ["bin120", "bin240", "bin1100", "multi", "bag", "caddy", "underground"] as const;
 export type BinShape = (typeof BIN_SHAPES)[number];
@@ -167,6 +172,7 @@ export interface Pickup {
 interface CalEvent {
   summary?: string;
   start?: { date?: string; dateTime?: string } | string;
+  end?: { date?: string; dateTime?: string } | string;
 }
 
 /** The day of an event's start, local midnight. */
@@ -195,12 +201,13 @@ export function wasteCalendars(floors: readonly { furniture: readonly Furniture[
 }
 
 /** Events of the next `days` days of the waste calendars, by calendar; a calendar that fails is left out. */
-export async function fetchPickups(hass: HomeAssistant, calendars: readonly string[], now = new Date(), days = 10): Promise<Map<string, Pickup[]>> {
+// six weeks ahead: bins emptied every two or four weeks show their next pickup too (#585)
+export async function fetchPickups(hass: HomeAssistant, calendars: readonly string[], now = new Date(), days = 42): Promise<Map<string, Pickup[]>> {
   const out = new Map<string, Pickup[]>();
   const api = (hass as unknown as { callApi?: <T>(method: string, path: string) => Promise<T> }).callApi;
   if (!api) return out;
   const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const end = new Date(start.getTime() + days * 86400_000);
+  const end = addDays(start, days);
   await Promise.all(
     calendars.map(async (id) => {
       try {
@@ -214,6 +221,77 @@ export async function fetchPickups(hass: HomeAssistant, calendars: readonly stri
   return out;
 }
 
+/** An entry of a calendar today (the glass card "Today in the household"): all day, or from its start to its end. */
+export interface DayEvent {
+  summary: string;
+  calendar: string;
+  allDay: boolean;
+  start: Date | null;
+  end: Date | null;
+}
+
+/** The moment of an event's start or end; an all-day "2026-11-13" is local midnight. */
+function momentOf(t: CalEvent["start"]): { at: Date; allDay: boolean } | null {
+  const raw = typeof t === "string" ? t : (t?.dateTime ?? t?.date);
+  if (!raw) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  const at = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(raw);
+  return Number.isNaN(at.getTime()) ? null : { at, allDay: !!m };
+}
+
+export function dayEventsOf(events: readonly CalEvent[], calendar: string): DayEvent[] {
+  return events
+    .map((e) => {
+      const s = momentOf(e.start);
+      const en = momentOf(e.end);
+      return { summary: String(e.summary ?? "").trim(), calendar, allDay: !!s?.allDay, start: s?.at ?? null, end: en?.at ?? null };
+    })
+    .filter((e) => e.summary);
+}
+
+/** Today's entries of the household calendars (idea: T-Eberle); a calendar that fails is left out. */
+export async function fetchDayEvents(hass: HomeAssistant, calendars: readonly string[], now = new Date()): Promise<DayEvent[]> {
+  const api = (hass as unknown as { callApi?: <T>(method: string, path: string) => Promise<T> }).callApi;
+  if (!api || !calendars.length) return [];
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const end = addDays(start, 1);
+  const lists = await Promise.all(
+    calendars.map(async (id) => {
+      try {
+        const events = await api.call(hass, "GET", `calendars/${id}?start=${encodeURIComponent(start.toISOString())}&end=${encodeURIComponent(end.toISOString())}`);
+        return dayEventsOf(Array.isArray(events) ? (events as CalEvent[]) : [], id);
+      } catch {
+        return [];
+      }
+    }),
+  );
+  return lists.flat();
+}
+
+/**
+ * The card's lines for today's calendar entries: all-day ones first, then by their start ("14:30 Dentist"); an entry
+ * that has ended is gone, one starting within the hour is drawn in amber. At most `max` lines.
+ */
+export function calendarItems(events: readonly DayEvent[], now = new Date(), lang?: string, max = 6): HouseholdItem[] {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrow = addDays(today, 1);
+  const time = (d: Date) => d.toLocaleTimeString(lang || undefined, { hour: "2-digit", minute: "2-digit" });
+  return events
+    .filter((e) => {
+      if (e.allDay) return (!e.start || e.start < tomorrow) && (!e.end || e.end > today);
+      if (e.end && e.end <= now) return false;
+      return !e.start || e.start < tomorrow;
+    })
+    .sort((a, b) => Number(b.allDay) - Number(a.allDay) || (a.start?.getTime() ?? 0) - (b.start?.getTime() ?? 0))
+    .filter((e, i, all) => all.findIndex((x) => x.summary === e.summary && x.start?.getTime() === e.start?.getTime()) === i)
+    .slice(0, max)
+    .map((e) => {
+      const timed = !e.allDay && e.start && e.start >= today;
+      const soon = !e.allDay && !!e.start && e.start.getTime() - now.getTime() <= 3_600_000 && (!e.end || e.end > now);
+      return { icon: "calendar-clock", text: timed ? `${time(e.start as Date)} ${e.summary}` : e.summary, entity: e.calendar, ...(soon ? { hot: true } : {}) };
+    });
+}
+
 /** What a bin shows: its next pickup in days (0 = today) and whether it glows now. */
 export interface BinDue {
   days: number;
@@ -224,6 +302,8 @@ export interface BinDue {
 }
 
 const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+/** A day `n` days later, counted in calendar days (a day with a clock change has 23 or 25 hours, D576). */
+const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
 const daysBetween = (a: Date, b: Date) => Math.round((startOfDay(b).getTime() - startOfDay(a).getTime()) / 86400_000);
 
 /** From which hour the day before a bin glows, until which hour on the day (the house's settings; 14 and 12). */
@@ -276,24 +356,160 @@ export function binDue(f: Pick<Furniture, "bin_kind" | "bin_source" | "bin_match
   if (!st) return null;
   const days = sensorDays(st, now);
   if (days === null || days < 0) return null;
-  const day = new Date(today.getTime() + days * 86400_000);
+  const day = addDays(today, days);
   return { days, day, summary: String(st.attributes.friendly_name ?? ""), glow: binGlows(days, now, hours) };
 }
 
-/** Days until the pickup a sensor tells: a number, a date or a timestamp, or Waste Collection Schedule's `daysTo`. */
+/** An entity that says "on" (input_boolean, switch, binary_sensor …), null when unset or unknown. */
+function onEntity(id: EntityRef | undefined, hass: HomeAssistant): boolean {
+  const ref = typeof id === "string" && id !== "none" ? id : null;
+  const st = ref ? hass.states[ref] : undefined;
+  return !!st && ON.has(String(st.state).toLowerCase());
+}
+
+/** Whether a bin has been put out: its "put out" entity (an input_boolean a nightly automation resets) is on. */
+export function binOut(f: Pick<Furniture, "bin_out">, hass: HomeAssistant): boolean {
+  return onEntity(f.bin_out, hass);
+}
+
+/** A "put out" entity a tap can switch: an input_boolean or a switch (a binary sensor is only read). */
+export function binOutToggleable(f: Pick<Furniture, "bin_out">): boolean {
+  return typeof f.bin_out === "string" && /^(input_boolean|switch)\./.test(f.bin_out);
+}
+
+/** A tag that stands on a household item: a bin's pickup, a mailbox's post, a thirsty plant. */
+export interface HouseholdTag {
+  id: string;
+  floorId: string;
+  x: number;
+  z: number;
+  /** Height of the item's top above its floor. */
+  y: number;
+  /** The item's footprint radius (half its longer side), to find bins standing together. */
+  r: number;
+  name: string;
+  color: string;
+  when: string;
+  /** Today or tomorrow (a bin), or something to do now: bright. */
+  soon?: boolean;
+  /** Days to a bin's pickup (sorts the lines of a merged tag); -1 for a mailbox or a plant. */
+  days: number;
+  /** The bin is out already ("put out ✓"). */
+  out?: boolean;
+  /** A mailbox or a plant: from afar a round symbol instead of the tiny text. */
+  icon?: "mail" | "plant";
+}
+
+/** One tag in the view: one item, or bins standing together with one line each in pickup order. */
+export interface TagGroup {
+  floorId: string;
+  x: number;
+  z: number;
+  y: number;
+  lines: HouseholdTag[];
+}
+
+/**
+ * Bins standing together share one tag (their tags covered each other): bins on one floor whose footprints come
+ * closer than `gap` metres form a group, its lines sorted by pickup (then by name). A mailbox or a plant keeps its own.
+ */
+export function groupTags(tags: readonly HouseholdTag[], gap = 0.3): TagGroup[] {
+  const bins = tags.filter((t) => !t.icon);
+  const parent = bins.map((_, i) => i);
+  const root = (i: number): number => (parent[i] === i ? i : (parent[i] = root(parent[i])));
+  for (let i = 0; i < bins.length; i++)
+    for (let j = i + 1; j < bins.length; j++) {
+      const a = bins[i];
+      const b = bins[j];
+      if (a.floorId === b.floorId && Math.hypot(a.x - b.x, a.z - b.z) <= a.r + b.r + gap) parent[root(j)] = root(i);
+    }
+  const groups = new Map<number, HouseholdTag[]>();
+  bins.forEach((t, i) => groups.set(root(i), [...(groups.get(root(i)) ?? []), t]));
+  const out: TagGroup[] = [];
+  for (const lines of groups.values()) {
+    lines.sort((a, b) => a.days - b.days || a.name.localeCompare(b.name));
+    out.push({ floorId: lines[0].floorId, x: lines.reduce((s, t) => s + t.x, 0) / lines.length, z: lines.reduce((s, t) => s + t.z, 0) / lines.length, y: Math.max(...lines.map((t) => t.y)), lines });
+  }
+  for (const t of tags) if (t.icon) out.push({ floorId: t.floorId, x: t.x, z: t.z, y: t.y, lines: [t] });
+  return out;
+}
+
+/** The plan's choices for the bins' tags: only the next pickup, only from some days before (null = always). */
+export interface BinTagOptions {
+  nextOnly?: boolean | null;
+  ahead?: number | null;
+}
+
+/**
+ * Which bins wear a tag: every bin with a pickup (as before), or – by the plan's settings – only the bins of the
+ * earliest pickup and/or only from `ahead` days before it. Bins without a tag still glow and can be tapped.
+ */
+export function binTagsShown(bins: readonly { id: string; days: number }[], o: BinTagOptions = {}): Set<string> {
+  const ahead = typeof o.ahead === "number" && o.ahead >= 0 ? o.ahead : null;
+  const first = bins.length ? Math.min(...bins.map((b) => b.days)) : 0;
+  return new Set(bins.filter((b) => (ahead === null || b.days <= ahead) && (!o.nextOnly || b.days === first)).map((b) => b.id));
+}
+
+/**
+ * A date written inside a sensor's text, as Waste Collection Schedule's own formats show it: "on Mon, 26.10.2026",
+ * "Biotonne 26.10.", "2026-10-26 (Mo)", "26/10/2026" (day first unless that cannot be). A date without a year that
+ * has passed this year is next year's. Null when the text holds none – its numbers are no date then.
+ */
+export function dateInText(text: string, now = new Date()): Date | null {
+  const iso = /(\d{4})-(\d{1,2})-(\d{1,2})/.exec(text);
+  // a dash only with a four-digit year ("17-11-2026", Afvalbeheer, #962), so "in 2-4 days" stays no date
+  const dmy =
+    /(?:^|[^\d])(\d{1,2})([./])(\d{1,2})\2(\d{4}|\d{2})?(?![\d])/.exec(text) ??
+    /(?:^|[^\d])(\d{1,2})(-)(\d{1,2})-(\d{4})(?![\d])/.exec(text);
+  let y: number;
+  let m: number;
+  let d: number;
+  if (iso) [y, m, d] = [Number(iso[1]), Number(iso[2]), Number(iso[3])];
+  else if (dmy) {
+    let a = Number(dmy[1]);
+    let b = Number(dmy[3]);
+    // a slash with the month first ("10/26/2026") only when the day cannot come first
+    if (dmy[2] === "/" && b > 12 && a <= 12) [a, b] = [b, a];
+    d = a;
+    m = b;
+    const yy = dmy[4];
+    y = yy ? (yy.length === 2 ? 2000 + Number(yy) : Number(yy)) : now.getFullYear();
+    if (!yy && new Date(y, m - 1, d) < startOfDay(now)) y += 1;
+  } else return null;
+  if (m < 1 || m > 12 || d < 1 || d > 31) return null;
+  const day = new Date(y, m - 1, d);
+  return day.getMonth() === m - 1 ? day : null;
+}
+
+/**
+ * Days until the pickup a sensor tells: a number, a date or a timestamp, Waste Collection Schedule's `daysTo` or
+ * Afvalbeheer's `Days_until`.
+ */
 export function sensorDays(st: HassEntity, now = new Date()): number | null {
   const a = st.attributes as Record<string, unknown>;
   if (typeof a.daysTo === "number") return a.daysTo;
+  // Afvalbeheer's own count (#962)
+  for (const k of ["Days_until", "days_until"]) {
+    const v = a[k];
+    if (typeof v === "number" && Number.isFinite(v)) return Math.round(v);
+    if (typeof v === "string" && /^-?\d+$/.test(v.trim())) return Number(v.trim());
+  }
   const s = String(st.state).trim();
   if (/^-?\d+(\.\d+)?$/.test(s)) return Math.round(Number(s));
-  const date = dayOf(s);
+  // a timestamp is read as a moment (its local day); any other text for a date written in it – the browser's own
+  // reading of free text would make "Weihnachtsbaum 05.01." the year 2001
+  const date = /^\d{4}-\d{2}-\d{2}T/.test(s) ? dayOf(s) : dateInText(s, now);
   if (date) return daysBetween(now, date);
   // "in 2 Tagen", "in 3 days", "morgen"/"tomorrow", "heute"/"today"
   const low = s.toLowerCase();
   if (/(^|\s)(heute|today|vandaag|aujourd|oggi|hoy|hoje|idag|i dag|tänään|dnes|ma$|dziś|dzis|今天)/.test(low)) return 0;
   if (/(^|\s)(morgen|tomorrow|demain|domani|mañana|amanhã|imorgon|i morgen|huomenna|zítra|holnap|jutro|明天)/.test(low)) return 1;
-  const n = /(\d+)/.exec(low);
-  return n ? Number(n[1]) : null;
+  // the days are the number before a word for days or after "in" ("Restabfall 2-wöchentlich in 4 Tagen" is 4, D576),
+  // else the last number of the text
+  const unit = /(\d+)\s*(tag|day|dag|jour|giorn|día|dia|päiv|paiv|den|dn|nap|天)/.exec(low) ?? /\bin\s+(\d+)/.exec(low);
+  if (unit) return Number(unit[1]);
+  const all = low.match(/\d+/g);
+  return all ? Number(all[all.length - 1]) : null;
 }
 
 // ---------------------------------------------------------------- mailbox
@@ -329,12 +545,30 @@ export function mailboxPost(f: Pick<Furniture, "entity" | "mailbox_door">, hass:
 
 /** The entity fields of the household items, for the watched list. */
 export function householdEntities(f: Furniture): EntityRef[] {
-  if (f.type === "waste_bin") return [f.bin_source ?? null];
+  if (f.type === "waste_bin") return [f.bin_source ?? null, f.bin_out ?? null];
   if (f.type === "mailbox") return [f.entity ?? null, f.mailbox_door ?? null];
   return householdExtras(f);
 }
 
 // ---------------------------------------------------------------- Haushalt Pro, part 2: plants, appliances, upkeep, fridge
+
+/** An appliance that runs a programme: it tells its time left and "Done!" until its door opens. */
+export type ApplianceKind = "washer" | "dryer" | "dishwasher" | "oven";
+
+/**
+ * What programme appliance an item is: the built-in washer, dryer and dishwasher, and the pack items that are one
+ * (the kitchen pack's built-in dishwasher and oven, #973), by their id; null for anything else.
+ */
+export function applianceOf(type: string): ApplianceKind | null {
+  if (type === "washer" || type === "dryer" || type === "dishwasher") return type;
+  const id = packItem(type)?.id;
+  if (!id) return null;
+  if (/dishwasher|geschirr/.test(id)) return "dishwasher";
+  if (/dryer|trockner/.test(id)) return "dryer";
+  if (/washer|washing|waschmaschine/.test(id)) return "washer";
+  if (/oven|cooker|backofen/.test(id)) return "oven";
+  return null;
+}
 
 /** The number of an entity's state, when it is one. */
 const num = (st: HassEntity | undefined): number | null => {
@@ -386,6 +620,23 @@ export function isFinishedState(st: HassEntity | undefined): boolean {
   return FINISHED.has(s);
 }
 
+/** States of an appliance (or of its status sensor) that say it runs no program. */
+const IDLE = new Set(["off", "idle", "standby", "stand_by", "ready", "inactive", "sleep", "sleeping", "power_off", "aus", "bereit", "unavailable"]);
+
+/**
+ * Whether an appliance's own readings say it is idle, so a time left on its display sensor is a leftover (after a
+ * power cut the sensor may keep its last minutes): its state entity is off or idle, or its power is at standby –
+ * unless its state entity (a status sensor, the appliance's own entity) tells a program running. A smart plug's switch
+ * that is on tells nothing. Without a power reading or a state nothing is known: not idle.
+ */
+export function applianceIdle(st: HassEntity | undefined, power: number | null, runW: number): boolean {
+  const s = st ? String(st.state).toLowerCase().replace(/\s+/g, "_") : null;
+  if (s !== null && IDLE.has(s)) return true;
+  const plug = !!st && /^(switch|input_boolean|light)\./.test(st.entity_id);
+  const reportsRun = !!st && !plug && s !== null && (s === "on" || /run|wash|dry|rinse|spin|clean|läuft|laeuft|betrieb/.test(s));
+  return power !== null && power <= runW && !reportsRun;
+}
+
 /** Text of the minutes left: "23 min", "1:05 h". */
 export function remainingText(min: number): string {
   return min >= 60 ? `${Math.floor(min / 60)}:${String(min % 60).padStart(2, "0")} h` : `${min} min`;
@@ -396,14 +647,29 @@ export function remainingText(min: number): string {
  * or below its threshold (percent or days left; null: 10), a date or timestamp that is reached.
  */
 export function serviceDue(f: Pick<Furniture, "service" | "service_min">, hass: HomeAssistant, now = new Date()): boolean {
-  const id = typeof f.service === "string" && f.service !== "none" ? f.service : null;
+  return entityDue(f.service, f.service_min, hass, now);
+}
+
+function entityDue(ref: EntityRef | undefined, min: number | null | undefined, hass: HomeAssistant, now: Date): boolean {
+  const id = typeof ref === "string" && ref !== "none" ? ref : null;
   const st = id ? hass.states[id] : undefined;
   if (!id || !st || st.state === "unavailable" || st.state === "unknown") return false;
   if (id.startsWith("binary_sensor.") || id.startsWith("input_boolean.")) return st.state === "on";
   const v = num(st);
-  if (v !== null) return v <= (f.service_min ?? 10);
+  if (v !== null) return v <= (min ?? 10);
   const d = dayOf(st.state);
   return !!d && d.getTime() <= startOfDay(now).getTime();
+}
+
+/**
+ * The services of an item that are due now: its first one and a second one (a robot vacuum's brushes and its dock's
+ * dust bag, say), each with its own threshold; the due entities in that order.
+ */
+export function servicesDue(f: Pick<Furniture, "service" | "service_min" | "service2" | "service2_min">, hass: HomeAssistant, now = new Date()): string[] {
+  const out: string[] = [];
+  if (entityDue(f.service, f.service_min, hass, now)) out.push(f.service as string);
+  if (f.service2 !== f.service && entityDue(f.service2, f.service2_min, hass, now)) out.push(f.service2 as string);
+  return out;
 }
 
 /** The door sensors of an item (a fridge's two doors, an appliance's door). */
@@ -464,5 +730,5 @@ export class FinishedMemory {
 
 /** The household's entity fields of part 2, for the watched list. */
 export function householdExtras(f: Furniture): EntityRef[] {
-  return [f.moisture ?? null, f.remaining ?? null, f.service ?? null];
+  return [f.moisture ?? null, f.remaining ?? null, f.service ?? null, f.service2 ?? null];
 }
