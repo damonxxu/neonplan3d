@@ -3,7 +3,7 @@ import type { GeoBuffer } from "./geo.ts";
 import type { MeshData } from "./external-glb.ts";
 import registry from "./external-models.json" with { type: "json" };
 
-interface Asset { file: string; paints?: Record<string, string> }
+interface Asset { file: string; paints?: Record<string, string>; widthFraction?: number; heightFraction?: number }
 const assets: Record<string, Asset> = registry;
 const ready = new Map<string, MeshData>();
 const requests = new Map<string, Promise<void>>();
@@ -28,6 +28,9 @@ export function requestMesh(type: string): Promise<void> | undefined {
 export function drawExternalModel(type: string, buf: GeoBuffer, tf: (x: number, z: number) => [number, number], w: number, d: number, h: number, base: number, mirrored: boolean): boolean {
   const mesh = ready.get(type);
   if (!mesh) return false;
+  // A mesh without mirrors occupies only the body portion of the pack footprint.
+  w *= assets[type].widthFraction ?? 1;
+  h *= assets[type].heightFraction ?? 1;
   const points = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
   const colors = [new Color(), new Color(), new Color()];
   for (let i = 0; i < mesh.positions.length; i += 9) {

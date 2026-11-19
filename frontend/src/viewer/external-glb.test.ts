@@ -22,3 +22,15 @@ test("the parked Model 3 decodes with finite colours and fits its declared dimen
   assert.deepEqual(min, [-0.5, 0, -0.5]);
   assert.deepEqual(max, [0.5, 1, 0.5]);
 });
+
+test("Cybertruck uses the production body mesh at the specified ride height", async () => {
+  const asset = registry["pack:studio.damonxxu-vehicles:cybertruck"];
+  const file = new URL("../../../custom_components/neonplan3d/frontend/models/" + asset.file, import.meta.url);
+  const bytes = await readFile(file);
+  const mesh = await decodeGLB(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.length));
+  assert.equal(mesh.positions.length / 9, 72528);
+  assert.ok(mesh.positions.every(Number.isFinite));
+  assert.ok(mesh.colors.every(Number.isFinite));
+  assert.ok(Math.abs(2.413 * asset.widthFraction - 2.0316) < 0.0001);
+  assert.ok(Math.abs(1.791 * asset.heightFraction - 1.7938) < 0.0001);
+});

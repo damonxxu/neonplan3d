@@ -1,6 +1,13 @@
 {
   "pack:studio.damonxxu-vehicles:model3_2022": {
     "file": "tesla-model-3.glb",
-    "paints": { "CAR_PAINT": "#353a40" }
+    "paints": {
+      "CAR_PAINT": "#353a40"
+    }
+  },
+  "pack:studio.damonxxu-vehicles:cybertruck": {
+    "file": "tesla-cybertruck.glb",
+    "widthFraction": 0.8419394944053047,
+    "heightFraction": 1.0015633724176438
   }
 }
