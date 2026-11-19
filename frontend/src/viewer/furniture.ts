@@ -3,6 +3,7 @@
 // rotated and moved into place. Solids go into the floor's wall buffer, main outlines into its line
 // buffer and a soft contact shadow into the shadow layer, so furniture adds no draw calls.
 
+import { drawExternalModel } from "./external-models.ts";
 import { Color } from "three";
 import type { Furniture, Vec2 } from "../model.ts";
 import { BOILER_Y, builtinBase, gangsOf, stairsULayout, POOL_VALVE_Y } from "../model.ts";
@@ -1950,7 +1951,7 @@ function buildModel(buf: GeoBuffer, lines: LineBuffer, shadow: GeoBuffer, f: Fur
         // live parts (3.4) are models of their own too, moved by the viewer (pushPackLive); a picture keeps them
         const live = !still && hasLiveParts(item);
         const skip = !still && (packSpinAxis(item) || live) ? (p: PackPart) => !!p.spin || !!p.bind || !!own?.(p) : own;
-        packModel(b, item, w, d, h, base, null, null, skip);
+        if (!drawExternalModel(f.type, buf, tf, w, d, h, base, !!f.mirror)) packModel(b, item, w, d, h, base, null, null, skip);
         // items on furniture, walls or ceilings cast no shadow on the floor
         if (base > 0.05) return;
       } else b.box(-w / 2, w / 2, 0, h, -d / 2, d / 2, C.body, C.bodyTop, EDGE_FURN);

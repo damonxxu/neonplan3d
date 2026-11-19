@@ -180,3 +180,7 @@ Pack-Angaben, damit der Katalog nach dem Veröffentlichen sofort die richtigen U
 
 Signieren von Hand: `python tools/fp3dpack.py sign PACK.json --key … --licensee "Name" --instance <Kennung>`.
 
+
+### External vehicle meshes in this fork
+
+Place a self-contained, static GLB under `custom_components/neonplan3d/frontend/models/`, include its redistribution licence and attribution, and map the existing pack item type to its filename in `frontend/src/viewer/external-models.json`. Rebuild the frontend. The viewer expects Y up and the nose along +Z, centres the model on the spot, and fits it to the pack dimensions. It supports triangles with solid base colours, vertex colours and optional material-name paint overrides. Use an uncompressed model with no textures, skins or animations and at most 150,000 triangles. The signed pack supplies the item identity, dimensions and fallback geometry. Model files are served locally by Home Assistant.

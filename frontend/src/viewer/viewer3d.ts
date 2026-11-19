@@ -32,6 +32,7 @@ export const funLib = { Group, Mesh, MeshBasicMaterial, CanvasTexture, Color, Pl
 
 export type { PipeTube };
 import { groundUnder, isCooktopZone, mountBase, packItem, packMotion, packSpinAxis, setPacks, type FurniturePack } from "../packs.ts";
+import { requestMesh } from "./external-models.ts";
 import { withVehicles } from "../parking.ts";
 import { buildRoof, type RoofGeometry, type RoofWindowState } from "./roof.ts";
 import { SunFx } from "./sun-fx.ts";
@@ -636,6 +637,7 @@ export class FloorplanViewer {
   /** "Auto" on the full level: frame times while the view is turned, until it is decided (#952). */
   private slowWatch: { quality: Quality; since: number; last: number; ms: number[] } | null = null;
   private disposed = false;
+  private readonly loadingModels = new Set<string>();
   private readonly resizeObserver: ResizeObserver;
   private fpsFrames = 0;
   private worstFrame = 0;
@@ -3167,7 +3169,21 @@ export class FloorplanViewer {
             return y === null ? null : y - floor.elevation;
           }
         : undefined;
-      const geo = this.dual(() => buildFloorGeometry(withVehicles(floor, this.parked), b.settings.wall_exterior, b.settings.wall_interior, stairHoleParts(b.floors, floor), garden, roofUnder, floor.id === groundId ? around : null, roofRise));
+      const furnished = withVehicles(floor, this.parked);
+      for (const item of furnished.furniture) {
+        if (this.loadingModels.has(item.type)) continue;
+        const load = requestMesh(item.type);
+        if (!load) continue;
+        this.loadingModels.add(item.type);
+        load.then(() => {
+          if (!this.disposed) {
+            this.rebuild();
+            this.invalidate();
+          }
+        }).catch((error: unknown) => console.warn("NeonPlan could not load model", item.type, error))
+          .finally(() => this.loadingModels.delete(item.type));
+      }
+      const geo = this.dual(() => buildFloorGeometry(furnished, b.settings.wall_exterior, b.settings.wall_interior, stairHoleParts(b.floors, floor), garden, roofUnder, floor.id === groundId ? around : null, roofRise));
       const mask: FoldMasks = { standing: { value: 0xffff }, glass: { value: 0 } };
       const materials = this.makeMaterials(mask);
       const group = new Group();

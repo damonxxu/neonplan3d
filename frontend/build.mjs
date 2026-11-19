@@ -19,6 +19,7 @@ const common = {
   logLevel: "info",
 };
 
+const glbConfig = { ...common, entryPoints: ["src/viewer/external-glb.ts"], outfile: `${out}/neonplan3d-glb.js` };
 const viewerConfig = { ...common, entryPoints: ["src/viewer/viewer3d.ts"], outfile: `${out}/neonplan3d-3d.js` };
 // the card's visual editor only loads in the dashboard's card dialog
 // the language files (lang/*.json) are fetched with a hash of their content, so a new text is never stale
@@ -177,13 +178,14 @@ function copyFonts() {
 // editor 1140 KB, 3D 920 KB on 2026-11-15: furniture 3.4 – the shop's furniture as locked cards in the library, finishes (wood, fabric, fronts) and live parts of pack items (doors, drawers, levels, status lights)
 // main 709.8 KB on 2026-11-15 (was 870.0): the 1130 texts only the editor needs moved to i18n-editor.ts in the editor bundle; card editor 179 KB
 // Fork additions include the curtain mesh, boiler glow, vehicle choices and multi-value pin editor.
-const BUDGET = { "neonplan3d.js": 870 * 1024, "neonplan3d-fun.js": 40 * 1024, "neonplan3d-voice.js": 60 * 1024, "neonplan3d-locate.js": 160 * 1024, "neonplan3d-osm.js": 20 * 1024, "neonplan3d-timetravel.js": 120 * 1024, "neonplan3d-3d.js": 922 * 1024, "neonplan3d-editor.js": 1142 * 1024, "neonplan3d-card-editor.js": 340 * 1024 };
+const BUDGET = { "neonplan3d.js": 870 * 1024, "neonplan3d-fun.js": 40 * 1024, "neonplan3d-voice.js": 60 * 1024, "neonplan3d-locate.js": 160 * 1024, "neonplan3d-osm.js": 20 * 1024, "neonplan3d-timetravel.js": 120 * 1024, "neonplan3d-3d.js": 926 * 1024, "neonplan3d-editor.js": 1142 * 1024, "neonplan3d-card-editor.js": 340 * 1024 };
 
 copyFonts();
 if (watch) {
   // in watch mode the hash is not tracked; a dev reload fetches the bundle anyway
-  for (const c of [viewerConfig, editorConfig("dev", "dev", "dev", "dev"), cardEditorConfig, timeTravelConfig, funConfig, voiceConfig, locateConfig, osmConfig, mainConfig("dev", "dev", "dev", "dev", "dev", "dev", "dev")]) await (await context(c)).watch();
+  for (const c of [glbConfig, viewerConfig, editorConfig("dev", "dev", "dev", "dev"), cardEditorConfig, timeTravelConfig, funConfig, voiceConfig, locateConfig, osmConfig, mainConfig("dev", "dev", "dev", "dev", "dev", "dev", "dev")]) await (await context(c)).watch();
 } else {
+  await build(glbConfig);
   await build(viewerConfig);
   await build(locateConfig);
   await build(osmConfig);
